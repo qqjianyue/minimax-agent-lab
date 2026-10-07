@@ -1,0 +1,9 @@
+# Keep the ASCII diagrams in the Markdown docs byte-stable across checkouts.
+# The box-drawing alignment is hand-tuned; line-ending churn would create
+# noisy diffs and risk reflowing the borders.
+* text=auto eol=lf
+
+*.md text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.txt text eol=lf

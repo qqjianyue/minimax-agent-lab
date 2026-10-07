@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Secrets / local config
+.env
+.env.*
+
+# Logs & local observability stores
+*.log
+phoenix_data/
+langfuse-data/
+
+# OS
+.DS_Store
+Thumbs.db
