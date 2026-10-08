@@ -1,6 +1,6 @@
 # 面试准备任务计划：本地 Agent 实践项目主线
 
-> **目标职位：** HSBC Associate Director, Software Engineering（Guardrail Platform AI Safety Track）\| Job ID 53435
+> **目标职位：** ABG Bank Associate Director, Software Engineering（Guardrail Platform AI Safety Track）\| Job ID 53435
 > **用户起点：** 已熟悉 prompt engineering、RAG、模型微调、AI 指标；有 MiniMax API 访问权限
 > **项目主线：** 构建一个本地运行的 AI Agent（MiniMax 后端），集成全链路指标监控与安全防护框架
 > **建议周期：** 7–10 天（可根据节奏压缩或延展）

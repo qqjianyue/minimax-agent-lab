@@ -1,5 +1,5 @@
 # Associate Director, Software Engineering (Guardrail Platform AI Safety Track)
-> HSBC Job ID: 53435
+> ABG Bank Job ID: 53435
 > Location: Guangzhou or Xi'an, China
 > Original application deadline shown: September 30, 2026
 > > **Application-status check:** The captured deadline has passed as of October 5, 2026. Confirm that the role is still open before applying.
@@ -7,7 +7,7 @@
 ## Listing Details
 | Field | Information |
 | --- | --- |
-| Employer | HSBC |
+| Employer | ABG Bank |
 | Business | CTO Platform, AI Platforms |
 | Job ID | 53435 |
 | Locations | Guangzhou or Xi'an, China |
@@ -16,7 +16,7 @@
 | Other listing metadata | Not included in the supplied capture |
 
 ## Role Overview
-HSBC's Group AI Platform team builds shared AI capabilities for use across the Bank. This role focuses on a centralized guardrail platform: turning AI safety checks into reusable services.
+ABG Bank's Group AI Platform team builds shared AI capabilities for use across the Bank. This role focuses on a centralized guardrail platform: turning AI safety checks into reusable services.
 
 The platform scope includes:
 - AI safety and policy enforcement.

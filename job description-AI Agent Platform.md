@@ -1,27 +1,27 @@
 # Associate Director, Software Engineering (GenAI Agent Platform)
 
-> HSBC Req ID: 57704
+> ABG Bank Req ID: 57704
 > Business: CTO Platforms (AI Platform)
 > Location: Shenzhen
 > Listing date shown on the page: 2026-10-07
 > Employment type: Full-time
-> Source page title: 职位详情 (Job Detail), employer 汇丰集团 (HSBC)
+> Source page title: 职位详情 (Job Detail), employer ABG Bank
 
 ## Listing Details
 
 | Field | Information |
 | --- | --- |
-| Employer | HSBC (汇丰集团) |
-| Issuing entity | HSBC Software Development (GuangDong) Limited |
+| Employer | ABG Bank |
+| Issuing entity | ABG Bank IT部门 |
 | Business unit | CTO Platforms (AI Platform) |
 | Req ID | 57704 |
 | Location | Shenzhen (深圳市) |
 | Employment type | Full-time (全职) |
 | Listing date shown | 2026-10-07 |
 | Position in employer job list | 8 / 189 |
-| Application system | AJINGA (third-party recruitment management system) |
-| Application notification e-mail | hsbcrecruiting@mail.ajinga.com |
-| Listing URL | https://www.ajinga.com/recruiting/company/13956/job/216533/job-detail |
+| Application system | 第三方招聘系统 |
+| Application notification e-mail | recruitment@example.com |
+| Listing URL | Not included |
 | Salary range | Not shown on the page |
 | Other listing metadata | Not shown on the page |
 
@@ -72,20 +72,17 @@ This role owns the engineering of a scalable Generative AI **agent platform** fo
 
 ## Equal Opportunity and Privacy Statements
 
-> "You'll achieve more when you join HSBC."
+> "You'll achieve more when you join ABG Bank."
 
-HSBC is an equal opportunity employer committed to building a culture where all employees are valued, respected and opinions count. We take pride in providing a workplace that fosters continuous professional development, flexible working and opportunities to grow within an inclusive and diverse environment. We encourage applications from all suitably qualified persons irrespective of, but not limited to, their gender or genetic information, sexual orientation, ethnicity, religion, social status, medical care leave requirements, political affiliation, people with disabilities, color, national origin, veteran status, etc. We consider all applications based on merit and suitability to the role. /WX
+ABG Bank is an equal opportunity employer committed to building a culture where all employees are valued, respected and opinions count. We take pride in providing a workplace that fosters continuous professional development, flexible working and opportunities to grow within an inclusive and diverse environment. We encourage applications from all suitably qualified persons irrespective of, but not limited to, their gender or genetic information, sexual orientation, ethnicity, religion, social status, medical care leave requirements, political affiliation, people with disabilities, color, national origin, veteran status, etc. We consider all applications based on merit and suitability to the role. /WX
 
 Personal data held by the Bank relating to employment applications will be used in accordance with our Privacy Statement, which is available on our website.
 
-**Issued by HSBC Software Development (GuangDong) Limited.**
-
-HSBC China currently utilizes AJINGA, a third party recruitment management system, to process job applications. Please watch out for emails, SMS, and/or WeChat messages from AJINGA. Note that AJINGA will only send notices from the following email, and will not ask you to provide any personal data by responding to the message directly.
-- E-mail: hsbcrecruiting@mail.ajinga.com
+**Issued by ABG Bank IT部门.**
 
 ## Capture Notes
 
-- Source: the live AJINGA job-detail page, opened and read in the in-app Browser on 2026-10-07.
+- Source: the live job-detail page, opened and read in the in-app Browser on 2026-10-07.
 - The page is a JavaScript single-page app and initially renders blank; content appears only after the app finishes bootstrapping (a reload plus a short wait was needed).
 - Responsibility 3 ends mid-sentence at "…and clear SLOs/SLAs to ensure accuracy," in the page's own visible text. The remainder of that sentence was not present in the rendered capture.
 - The page did not display a salary range, application deadline, experience level, or education-level filter fields.
@@ -94,7 +91,7 @@ HSBC China currently utilizes AJINGA, a third party recruitment management syste
 ## Appendix: Raw Extracted Page Text
 
 ```text
-汇丰集团
+ABG Bank
 职位列表
 登录
 English
@@ -110,7 +107,7 @@ Associate Director, Software Engineering (GenAI Agent Platform)
 
 Some careers have more impact than others.
 
-If you're looking for a career where you can make a real impression, join HSBC and discover how valued you'll be.
+If you're looking for a career where you can make a real impression, join ABG Bank and discover how valued you'll be.
 
 We are currently seeking an experienced professional to join our team in the role of Associate Director, Software Engineering (GenAI Agent Platform).
 
@@ -142,15 +139,14 @@ Requirements
 -   Demonstrates an AI-native mindset by applying AI-driven approaches, including coding assistants, to improve productivity, quality, and engineering best practices.
 -   RAG/MCP preferred: Practical RAG experience (retrieval, chunking, embeddings, vector databases such as Milvus/FAISS/Elastic/Pinecone)
 
-You'll achieve more when you join HSBC.
+You'll achieve more when you join ABG Bank.
 
-HSBC is an equal opportunity employer committed to building a culture where all employees are valued, respected and opinions count. We take pride in providing a workplace that fosters continuous professional development, flexible working and, opportunities to grow within an inclusive and diverse environment. We encourage applications from all suitably qualified persons irrespective of, but not limited to, their gender or genetic information, sexual orientation, ethnicity, religion, social status, medical care leave requirements, political affiliation, people with disabilities, color, national origin, veteran status, etc., We consider all applications based on merit and suitability to the role. /WX
+ABG Bank is an equal opportunity employer committed to building a culture where all employees are valued, respected and opinions count. We take pride in providing a workplace that fosters continuous professional development, flexible working and, opportunities to grow within an inclusive and diverse environment. We encourage applications from all suitably qualified persons irrespective of, but not limited to, their gender or genetic information, sexual orientation, ethnicity, religion, social status, medical care leave requirements, political affiliation, people with disabilities, color, national origin, veteran status, etc., We consider all applications based on merit and suitability to the role. /WX
 
 Personal data held by the Bank relating to employment applications will be used in accordance with our Privacy Statement, which is available on our website.
 
-***Issued By HSBC Software Development (GuangDong) Limited***
+***Issued By ABG Bank IT部门***
 
-HSBC China currently utilizes AJINGA, a third party recruitment management system, to process job applications. Please watch out for emails, SMS, and/or WeChat messages from AJINGA. Note that AJINGA will only send notices from the following email, and will not ask you to provide any personal data by responding to the message directly. - E-mail: hsbcrecruiting@mail.ajinga.com
 推荐 / 分享
 职位提醒
 创建职位提醒

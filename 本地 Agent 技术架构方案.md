@@ -1,6 +1,6 @@
 # 本地 Agent 技术架构方案
 
-> **目标**：设计一个可在本地机器轻量运行的 AI Agent，以 MiniMax 为大模型后端，集成全链路指标监控与安全监控防护框架。本方案同时服务于 HSBC Guardrail Platform（Job ID 53435）面试准备。
+> **目标**：设计一个可在本地机器轻量运行的 AI Agent，以 MiniMax 为大模型后端，集成全链路指标监控与安全监控防护框架。本方案同时服务于 ABG Bank Guardrail Platform（Job ID 53435）面试准备。
 > 
 > 
 
@@ -151,7 +151,7 @@ response = client.chat.completions.create(
     model="MiniMax-M3",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Search for HSBC stock price."}
+        {"role": "user", "content": "Search for ABG Bank stock price."}
     ],
     tools=[{
         "type": "function",
@@ -356,8 +356,6 @@ trace: session_123
 用户输入 → [Layer 1: 规则引擎] → [Layer 2: 分类器] → [Layer 3: 嵌入检索] → [Layer 4: LLM-as-Judge] → 决策
               (极速 <1ms)      (快速 <10ms)        (中等 <50ms)        (慢速 <500ms)
 ```
-
-
 
 |层级|技术|优点|缺点|适用场景|
 |---|---|---|---|---|
