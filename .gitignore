@@ -4,10 +4,33 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Secrets / local config
+# 注意：.env.* 会连带命中配置模板，因此下面显式放行 *.template
 .env
 .env.*
+!.env.template
+!*.env.template
+secrets/
+
+# 私密配置：绝对不进版本库。
+# 项目配置 config.yaml 是要提交的（随 release 走），所以只挡 mask-*.yaml。
+mask-config.yaml
+mask-*.yaml
+deploy/config.local.yaml
+
+# 目标机部署产物（不应进仓库）
+releases/
+current
+previous
+deploy-state.json
+*.tar.gz
 
 # Logs & local observability stores
 *.log

@@ -1,0 +1,35 @@
+# Phoenix 编排定义
+#
+# 刻意保持单服务：架构方案 §4.3 选 Phoenix 就是为了"pip 安装即跑、
+# 不需要像 Langfuse 那样编排 4 个服务"。这里只把它容器化以便和目标机
+# 其他容器统一管理，不引入额外依赖。
+
+name: phoenix
+
+services:
+  phoenix:
+    image: ${PHOENIX_IMAGE:?PHOENIX_IMAGE 未设置，请先复制 env.template 为 env}:${PHOENIX_IMAGE_TAG:-latest}
+    container_name: minimax-agent-phoenix
+    restart: unless-stopped
+    ports:
+      - "${PHOENIX_BIND:-0.0.0.0}:${PHOENIX_PORT:-6006}:6006"
+    environment:
+      PHOENIX_WORKING_DIR: ${PHOENIX_WORKING_DIR:-/mnt/data}
+      PHOENIX_PORT: "6006"
+    volumes:
+      # 数据落在 AGENT_HOME/shared/data/phoenix —— 与 releases/ 分离，
+      # 应用回退时 trace 历史不丢（对应"回退后可回答 FP 是否上升"的需求）
+      - ${AGENT_HOME:?AGENT_HOME 未设置，请先复制 env.template 为 env}/shared/data/phoenix:/mnt/data
+    healthcheck:
+      # 冒烟测试（L2）会查询这个端点确认 Phoenix 真的起来了，
+      # 而不是仅仅"容器在跑"
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=5).status==200 else 1)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,35 @@
+# 基础设施组件清单 —— 各组件版本独立于应用本体版本演进
+#
+# 每次升级某个组件后，同步更新这里的 version 与 updated 字段。
+# 应用回退（deploy/rollback.sh）不会修改本文件：回退只作用于 Python 应用，
+# 基础设施保持原样。
+
+schema_version: 1
+
+components:
+  - name: phoenix
+    description: Arize Phoenix —— trace 存储、评估 UI（对应架构方案 §4.3）
+    version: "0.0.0-unpinned"
+    image: arizephoenix/phoenix
+    image_tag: latest
+    compose_file: infra/phoenix/compose.yaml
+    setup_script: infra/phoenix/setup.sh
+    port: 6006
+    state: not-deployed
+    updated: ""
+    notes: >-
+      首次部署（B3）验证通过后，把 image_tag 从 latest 固定为具体版本号，
+      并在应用配置中记录该版本，避免上游 latest 变动导致回退后行为不一致。
+
+dependencies:
+  - name: docker-engine
+    version: "29.1.4"
+    required_by: [phoenix]
+    state: satisfied
+    notes: 目标机实测版本
+
+  - name: docker-compose
+    version: "5.0.1"
+    required_by: [phoenix]
+    state: satisfied
+    notes: 以 cli-plugin 形式安装于 /usr/libexec/docker/cli-plugins

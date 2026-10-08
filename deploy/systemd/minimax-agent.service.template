@@ -1,0 +1,54 @@
+[Unit]
+Description=minimax-agent (local Agent with guardrails, version %i)
+Documentation=file://%h/dev/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/current
+
+# 三条配置来源，职责分开：
+#   current/.release-env  —— **本 release 的构建元数据**（git sha / 构建时间）。
+#                           unit 里不写死版本，由服务从文件读，保证 /healthz
+#                           报的是实际在跑的那一份 —— 冒烟要靠它确认
+#                           "跑着的确实是刚发布的版本"。
+#   shared/.env           —— 非密钥参数（dotenv 格式，systemd 可直接解析）
+#   mask-config.yaml      —— 私密配置（YAML 格式，**必须由 app 自己解析**）。
+#                           systemd 的 EnvironmentFile= 只认 KEY=VALUE，
+#                           把它交给 EnvironmentFile 会被静默忽略，
+#                           结果是服务"看起来正常"但 /chat 全部 503。
+#
+# 顺序：构建元数据在前、用户配置在后。版本号必须由 release-env 说了算 ——
+# 冒烟靠它比对，容不得被别处覆盖成过期值。
+EnvironmentFile=-%h/current/.release-env
+EnvironmentFile=-%h/shared/.env
+Environment=MINIMAX_AGENT_SECRETS_FILE=%h/shared/.env
+Environment=MINIMAX_AGENT_MASK_CONFIG_FILE=%h/mask-config.yaml
+# 代码从 **当前 release** 加载，venv 里只有第三方依赖。
+# 这样 current 符号链接就是"现在跑哪份代码"的唯一事实来源 ——
+# 切链接换代码，回退也就真的只是切链接 + 重启，而不是再跑一次安装。
+Environment=PYTHONPATH=%h/current/src
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=%h/shared/venv/bin/python -m agent_service.main
+
+Restart=on-failure
+RestartSec=3
+# 反复崩溃时不要无限重启 —— 那会掩盖真实错误
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+StandardOutput=append:%h/shared/logs/stdout.log
+StandardError=append:%h/shared/logs/stderr.log
+
+# 基础加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# 目标机无 GPU，禁掉设备访问
+DevicePolicy=closed
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,4 @@
+build:
+  mask-config: /workspace/mask-config.yaml
+runtime:
+  mask-config: /data/workspace/minimax-agent/mask-config.yaml

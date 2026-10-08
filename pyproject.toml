@@ -1,0 +1,99 @@
+[project]
+name = "minimax-agent"
+version = "0.1.4"
+description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
+requires-python = ">=3.12"
+readme = "README.md"
+
+# 运行期依赖 —— B1 阶段只保留最小集合。
+# LLM SDK / LangGraph / Presidio / embedding 模型在对应批次（B5/B6）再引入，
+# 避免早期就背上 torch 级别的安装成本。
+dependencies = [
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.5,<3.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-socket>=0.7",
+    "ruff>=0.7",
+]
+
+# ---------------------------------------------------------------------------
+# 构建：单仓多包。所有包共享同一个版本号（决策 Q7：应用本体统一版本管理）。
+# 版本唯一来源是本文件，改版本只需要改这一处。
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/agent_core",
+    "src/guard_contract",
+    "src/policy_engine",
+    "src/detector_rules",
+    "src/llm_minimax",
+    "src/agent_service",
+]
+
+# ---------------------------------------------------------------------------
+# 测试分层（L0 单元 / L1 集成 / target 目标机专属）
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-m 'not target' --strict-markers -q"
+markers = [
+    "unit: L0 纯函数单元测试，完全离线",
+    "integration: L1 集成测试，使用 Fake 依赖，完全离线",
+    "target: 仅在目标机执行的测试，需要真实模型或网络（smoke / functional）",
+]
+
+# ---------------------------------------------------------------------------
+# 覆盖率：L0/L1 必须达到的门槛
+#
+# fail_under 是**合并口径**（L0 + L1 一起跑）的下限，不是单层的下限：
+# L1 单跑只有 68%（大量代码只被单元测试触达），拿单层数字当闸门没有意义。
+# 因此单层命令由 tasks.py 显式传 --cov-fail-under=0 关闭强制，
+# check / test-offline 才是真正执行这道门槛的地方。
+#
+# 89.9 而不是 90：留 0.1 的余量，避免分支覆盖率的小数抖动卡住提交。
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 89.9
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+# ---------------------------------------------------------------------------
+# 静态检查
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+
+# ---------------------------------------------------------------------------
+# uv
+# ---------------------------------------------------------------------------
+[tool.uv]
+package = true

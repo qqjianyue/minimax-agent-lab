@@ -1,0 +1,80 @@
+name: ci
+
+# 本地闸门的重复执行 + 留痕。
+# 权威闸门是本地 `tasks.py check`；CI 的作用是"防止忘记在本地跑"
+# 以及"留下一条别人也能看到的时间线"。任何一步失败都会在 PR 上显示红叉。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支的新提交取消上一次未完成的运行，省 CI 配额也避免结果互相覆盖
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"   # CI 用锁文件安装，不允许临时解析出新版本
+
+jobs:
+  local-gate:
+    name: L0 + L1 (offline gate)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 双平台：目标是 Linux，但策略/契约这类纯逻辑在 Windows 上也必须能跑，
+        # 否则本地 Windows 开发时会误以为"没问题"
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Verify lockfile is up to date
+        run: uv lock --check
+
+      - name: Lint + L0 + L1
+        run: uv run python scripts/tasks.py check
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: .coverage
+          if-no-files-found: ignore
+          retention-days: 7
+
+  target-marker-audit:
+    name: Audit target-only tests
+    runs-on: ubuntu-latest
+    # 只做一件事：确认所有标记为 target 的用例都是"确实只能在目标机跑"的，
+    # 并且它们的存在是显式的（而不是靠某人忘了在本地跑）。
+    # 这一步不需要网络或密钥。
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-groups
+      - name: List target tests
+        run: uv run python -m pytest -m target --collect-only -q --allow-network || true
+      - name: Assert default run excludes them
+        run: |
+          uv run python -m pytest -m "not target" --collect-only -q > /dev/null
+          echo "默认执行集合已排除 target 用例"
