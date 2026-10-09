@@ -14,8 +14,8 @@
 | FT-04 输入 PII | ✅ | — |
 | FT-05 输出 PII | ✅ 已改写 | 原用例测"模型复述 PII"，但 PII 在调模型前就被脱敏掉了，该行为不存在 |
 | FT-06 system prompt 泄露 | ✅ | — |
-| FT-07 危险工具调用 | ⏸ B5 | 需 C6 `agent_tools` |
-| FT-08 安全工具调用 | ⏸ B5 | 需 C6 |
+| FT-07 危险工具调用 | ✅ B5 | C6 agent_tools（/tools/execute 真实路径） |
+| FT-08 安全工具调用 | ✅ B5 | C6 |
 | FT-09 检索间接注入 | ⏸ B8 | 需 RAG 组件 |
 | FT-10 检测器超时降级 | ✅ | — |
 | FT-11 成本可观测 | ⏸ B4 | 需 C9 telemetry |
@@ -247,24 +247,53 @@ class TestFT12AuditIntegrity:
         assert "sk-" not in audit
 
 
+# --- FT-07 危险工具调用（B5 C6 解锁）----------------------------------------
+class TestFT07DangerousToolCall:
+    def test_dangerous_tool_requires_approval(self, http: httpx.Client) -> None:
+        """高危工具：guard 或 executor 任一条防线转人工，handler 永不执行。
+
+        走真实的 ``/tools/execute`` 执行路径（不再是只验 TOOL 阶段检测点）。
+        """
+        body = http.post(
+            "/tools/execute",
+            json={"tool": "delete_customer_records", "arguments": {"confirm": True}},
+        ).json()
+
+        assert body["status"] == "requires_approval"
+        assert body["requires_human"] is True
+        assert body["output"] is None  # 工具未被执行
+        assert body["request_id"]
+
+    def test_guard_stage_still_blocks_dangerous_text(self, http: httpx.Client) -> None:
+        """第一道防线：TOOL 阶段 guard 在 executor 之前拦下危险调用文本。"""
+        result = inspect(http, "drop table customers", stage="tool")
+        assert result["decision"]["action"] == "require_approval"
+
+
+# --- FT-08 安全工具调用（B5 C6 解锁）----------------------------------------
+class TestFT08SafeToolCall:
+    def test_safe_tool_executes_and_returns_result(self, http: httpx.Client) -> None:
+        body = http.post(
+            "/tools/execute",
+            json={"tool": "get_product_rate", "arguments": {"product_type": "deposit"}},
+        ).json()
+
+        assert body["status"] == "ok"
+        assert "1.85%" in body["output"]
+        assert body["requires_human"] is False
+        assert body["decision"]["action"] == "allow"
+
+    def test_unknown_tool_rejected_without_execution(self, http: httpx.Client) -> None:
+        body = http.post("/tools/execute", json={"tool": "ghost_tool", "arguments": {}}).json()
+        assert body["status"] == "not_found"
+
+
 # --- 待后续批次覆盖的场景 ---------------------------------------------------
 class TestPendingScenarios:
     """显式标记未覆盖的场景，避免它们被静默跳过。"""
 
-    def test_ft07_dangerous_tool_call(self, http: httpx.Client) -> None:
-        """工具参数里的危险操作必须转人工。
-
-        B5 接入 C6 ``agent_tools`` 后，此用例改为走真实的 /chat 工具调用路径；
-        当前仅验证 TOOL 阶段的检测点已就位。
-        """
-        result = inspect(http, "drop table customers", stage="tool")
-        assert result["decision"]["action"] == "require_approval"
-
     @pytest.mark.skip(reason="需 B8 RAG 组件：检索内容中的间接注入")
     def test_ft09_indirect_injection_in_retrieval(self, http: httpx.Client) -> None: ...
 
-    @pytest.mark.skip(reason="需 B5 C6 agent_tools：真实工具执行链路")
-    def test_ft08_safe_tool_call(self, http: httpx.Client) -> None: ...
-
-    @pytest.mark.skip(reason="需 B4 C9 telemetry：trace 落库与成本可视化")
+    @pytest.mark.skip(reason="需 D4 Phoenix 部署：trace 落库与成本可视化")
     def test_ft11_cost_observability(self, http: httpx.Client) -> None: ...

@@ -39,15 +39,21 @@ class GuardPipeline:
         detectors: Sequence[DetectorPort],
         *,
         enabled: frozenset[str] | None = None,
+        short_circuit: bool = False,
     ) -> None:
         """Args:
         engine: 策略引擎。
-        detectors: 参与检测的检测器（顺序不影响结果，引擎按策略优先级求值）。
+        detectors: 参与检测的检测器（顺序影响短路语义，见 short_circuit）。
         enabled: 启用白名单。None 表示全启用；用于紧急时一键关掉高成本检测器。
+        short_circuit: 分层触发（B5 C5）：按传入顺序运行，**已有命中结果时
+            跳过后续检测器**（后层只在前层未命中时触发，承担延迟/计费预算）。
+            **失败不短路** —— fail-closed 需要失败信息参与决策，检测器挂了
+            不能假装"没跑过"。attempted_detectors 只记录实际运行的检测器。
         """
         self._engine = engine
         self._detectors = tuple(detectors)
         self._enabled = enabled
+        self._short_circuit = short_circuit
 
     @property
     def detectors(self) -> tuple[DetectorPort, ...]:
@@ -80,8 +86,13 @@ class GuardPipeline:
         results: list[DetectorResult] = []
         failures: list[DetectorFailure] = []
         applicable = self._applicable(stage)
+        attempted: list[str] = []
 
         for detector in applicable:
+            # 分层触发：已有命中结果时后层不跑（见 short_circuit 的 docstring）
+            if self._short_circuit and results:
+                break
+            attempted.append(detector.name)
             try:
                 results.extend(detector.detect(text, stage=stage))
             except DetectorTimeoutError as exc:
@@ -103,13 +114,13 @@ class GuardPipeline:
 
         # attempted_detectors 必须传：引擎要靠它区分"检测器跑完了但没发现问题"
         # 与"检测器全挂了"。缺了这个信息，DEGRADED 模式会把前者误判成后者，
-        # 降级机制就变成了阻断机制。
+        # 降级机制就变成了阻断机制。short_circuit 下这里只含实际运行的检测器。
         return self._engine.evaluate(
             request_id=rid,
             stage=stage,
             results=results,
             failures=failures,
-            attempted_detectors=[d.name for d in applicable],
+            attempted_detectors=attempted,
         )
 
 

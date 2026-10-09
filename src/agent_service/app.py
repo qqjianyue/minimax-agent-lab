@@ -35,6 +35,7 @@ L3 功能测试需要能**单独验证检测与策略**，不必经过模型。�
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -55,6 +56,8 @@ from agent_service.models import (
     GuardInspectRequest,
     GuardInspectResponse,
     HealthResponse,
+    ToolExecuteRequest,
+    ToolExecuteResponse,
     VersionModel,
 )
 from guard_contract.enums import GuardStage, PolicyAction
@@ -183,6 +186,66 @@ def create_app(container: AppContainer) -> FastAPI:
         dep: ContainerDep,
     ) -> ChatResponse:
         return handle_chat(dep, payload)
+
+    @app.post("/tools/execute", response_model=ToolExecuteResponse)
+    def tool_execute(
+        payload: ToolExecuteRequest,
+        dep: ContainerDep,
+    ) -> ToolExecuteResponse:
+        """工具执行（C6）：TOOL 阶段 guard + executor 安全链。
+
+        数据流：
+
+        1. **TOOL 阶段 guard**（环绕拦截）：检测文本 = 工具名 + 参数序列化，
+           让 detector 看到与模型请求一致的调用意图 —— 危险工具调用
+           （FT-07）与工具参数里的 PII 在到达 executor 之前被拦下；
+        2. **executor 安全链**（:class:`~agent_tools.executor.ToolExecutor`）：
+           Schema 校验 → 高危拦截（dangerous 永不自动执行）→ 权限边界
+           （caller_scopes）→ handler。
+
+        **guard 非放行即不执行**：B5 阶段 TOOL 阶段判 redact / rewrite 也
+        直接不执行（结构化参数无法像文本一样"脱敏后继续"）；B6 编排层
+        若需要"脱敏后重试"语义再细化。``caller_scopes`` 由服务端注入
+        （B5 演示固定基础 scope），调用方不能自报权限 —— 见
+        :class:`~agent_service.models.ToolExecuteRequest`。
+        """
+        # 独立入口，自成一个请求，不与 /chat 共享 request_id。
+        request_id = f"req-{uuid4().hex[:12]}"
+        with _trace_span(dep, request_id, **{"chat.has_tools": True}):
+            guard_text = (
+                f"{payload.tool}: {json.dumps(payload.arguments, ensure_ascii=False)}"
+            )
+            decision, _ = _run_guarded(
+                dep,
+                span_name="tool_guard",
+                stage=GuardStage.TOOL,
+                text=guard_text,
+                request_id=request_id,
+                metadata={"endpoint": "/tools/execute", "tool": payload.tool},
+            )
+            decision_model = DecisionModel.from_decision(decision)
+
+            if decision.action is not PolicyAction.ALLOW:
+                blocked = decision.action is PolicyAction.BLOCK
+                return ToolExecuteResponse(
+                    request_id=request_id,
+                    decision=decision_model,
+                    status="blocked" if blocked else "requires_approval",
+                    requires_human=decision.requires_human,
+                )
+
+            outcome = dep.tool_executor.execute(
+                payload.tool,
+                payload.arguments,
+                caller_scopes=("customer_service",),
+            )
+            return ToolExecuteResponse(
+                request_id=request_id,
+                decision=decision_model,
+                status=outcome.status,
+                output=outcome.output,
+                requires_human=outcome.status == "requires_approval",
+            )
 
     @app.exception_handler(ConfigurationError)
     def _configuration_error(_: Request, exc: ConfigurationError) -> JSONResponse:

@@ -70,6 +70,9 @@ def make_client(
         llm=llm,
         telemetry=telemetry,
         audit_root=tmp_path,
+        # 本文件断言 detectors == ["rules.l1"] 等 B1-B4 装配语义；
+        # ML 分层装配（B5）在 test_service_tools.py 单独覆盖。
+        with_ml_detectors=False,
         **overrides,
     )
     return TestClient(create_app(container)), telemetry, container

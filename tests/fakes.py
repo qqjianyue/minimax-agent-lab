@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -61,18 +62,44 @@ class FakeLLM:
     """按队列返回预置响应的 LLM。
 
     Args:
-        responses: 依次返回的响应。队列耗尽后返回最后一条（便于测试多轮循环）。
+        responses: 依次返回的业务响应。队列耗尽后返回最后一条（便于测试多轮循环）。
+        judge_responses: 依次返回的 **LLM-as-Judge 调用**响应。judge 与业务
+            共用同一个 LLM 端口（生产里它们共享 MiniMax 端点），fake 必须
+            同样共享 —— 通过 system prompt 识别 judge 调用并路由到独立队列，
+            否则业务响应队列会被 judge 调用错位消耗。
         raise_after: 前 N 次调用正常，之后抛 ``LLMError``（测重试/降级路径）。
     """
 
     name: str = "fake-llm"
     responses: list[LLMResponse] = field(default_factory=list)
+    judge_responses: list[LLMResponse] = field(default_factory=list)
     calls: list[LLMRequest] = field(default_factory=list)
+    judge_calls: list[LLMRequest] = field(default_factory=list)
     raise_after: int | None = None
+
+    @staticmethod
+    def _is_judge_request(request: LLMRequest) -> bool:
+        if not request.messages or request.messages[0].role != "system":
+            return False
+        return "安全审查员" in request.messages[0].content
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         index = len(self.calls)
         self.calls.append(request)
+
+        if self._is_judge_request(request):
+            self.judge_calls.append(request)
+            if not self.judge_responses:
+                # 默认判 benign：未配 judge 响应时 judge 不命中，业务语义不受扰
+                return LLMResponse(
+                    model=request.model,
+                    content='{"label": "benign", "score": 0.0, "reason": "default benign"}',
+                    usage=TokenUsage(prompt_tokens=10, completion_tokens=5),
+                )
+            jidx = len(self.judge_calls) - 1
+            if jidx >= len(self.judge_responses):
+                return self.judge_responses[-1]
+            return self.judge_responses[jidx]
 
         if self.raise_after is not None and index >= self.raise_after:
             raise LLMError(f"fake failure at call #{index}")
@@ -94,6 +121,10 @@ class FakeLLM:
     def call_count(self) -> int:
         return len(self.calls)
 
+    @property
+    def judge_call_count(self) -> int:
+        return len(self.judge_calls)
+
 
 def make_response(
     content: str = "ok",
@@ -110,6 +141,13 @@ def make_response(
         tool_calls=tuple(tool_calls),
         usage=TokenUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
         finish_reason=finish_reason,
+    )
+
+
+def make_judge_response(label: str = "benign", score: float = 0.0, reason: str = "") -> LLMResponse:
+    """构造 LLM-as-Judge 调用的响应（judge 输出契约见 detector_ml.llm_judge）。"""
+    return make_response(
+        json.dumps({"label": label, "score": score, "reason": reason}, ensure_ascii=False)
     )
 
 
@@ -356,6 +394,7 @@ __all__ = [
     "RecordedSpan",
     "StubDetector",
     "cosine",
+    "make_judge_response",
     "make_response",
     "make_result",
 ]

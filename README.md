@@ -459,14 +459,31 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | B3 | C10 `agent_service` + `llm_minimax` + 部署脚本 | ✅ **目标机已实跑验证** |
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
-| B5 | C5 `detector_ml` + C6 `agent_tools` | 待开始 |
+| B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ 本地全绿，部署中 |
 | B6 | C7 `orchestrator` | 待开始 |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
-测试规模：L0 **517**（+5：3 项 POSIX 权限位在 Windows 上跳过、2 项需 bash）+ L1 **114** = **631**（本地离线，全绿）；
-L2 冒烟 **25** + L3 功能 **30** = **55**（目标机执行，**已全绿**：L3 中 3 项因 B5/B8 组件未实现而显式 skip）。
-L0+L1 合并覆盖率 **95%**。
+测试规模：L0 **567**（+50：B5 新增 C5/C6 用例；含 5 项 skip：3 项 POSIX 权限位在 Windows 上跳过、2 项需 bash）+ L1 **134** = **701**（本地离线，全绿）；
+L2 冒烟 **25** + L3 功能 **32** = **57**（目标机执行：FT-07/08 已随 B5 解锁，FT-09/FT-11 仍显式 skip）。
+L0+L1 合并覆盖率 **94%**（B5 新包拉低 1 个百分点，仍高于 89.9 门槛）。
+
+### B5 变更要点（v0.1.6）
+
+- **C5 `detector_ml`**：L2 Presidio PII（`pii.presidio`，evidence 掩码不落明文）、
+  L3 嵌入相似度（`injection.embedding`，bge-base-zh-v1.5，D1）、
+  L4 LLM-as-Judge（`llm.judge`，judge JSON 契约 + 证据结构化摘要）、
+  真实墙钟超时执行（daemon 线程 + 结果队列，B2 承诺落地）、
+  分层注册表（后层只在前层未命中时触发，`GuardPipeline.short_circuit`）。
+- **C6 `agent_tools`**：工具注册表 / JSON Schema 参数校验（jsonschema）/
+  执行安全链（Schema → 高危拦截 → 权限边界 → handler）/ 银行示例工具
+  （`get_product_rate` 安全 / `get_account_balance` 需 `account:read` /
+  `delete_customer_records` 高危永不自动执行）；`/tools/execute` 端点
+  （TOOL 阶段 guard 前置，guard 非放行即不执行）。
+- **依赖策略（决策 D7）**：ML 重依赖进 `ml` extras，本地不装（torch/presidio/spacy），
+  目标机 `ensure_venv` 带 `--extra ml` 装全量；本地 L0/L1 用 Fake + skipif 测契约。
+- **L3 解锁**：FT-07（危险工具 → require_approval）、FT-08（安全工具执行成功）走真实
+  `/tools/execute` 路径；FT-11 仍 skip（需 D4 Phoenix 部署）。
 
 > L2 里 11 条是 B4 新增的可观测性冒烟（账本位置 / 权限 / request_id 关联 / 落盘脱敏）。
 > 它们**直接读目标机文件系统**而不只看 HTTP 响应 —— 有一整类问题只在目标机上

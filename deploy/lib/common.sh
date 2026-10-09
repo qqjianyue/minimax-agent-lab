@@ -381,8 +381,11 @@ ensure_venv() {
 
   # --frozen：不允许现场改 lockfile。lock 与 pyproject 不一致时宁可失败，
   # 也不要悄悄装一套和本地测过的不同的依赖。
+  # --extra ml：B5 起目标机 venv 安装 ML 检测器重依赖（Presidio /
+  # sentence-transformers / spacy，含 torch）。本地 `uv sync` 不带该 extra，
+  # 保持 Windows 轻量 —— 依赖差异正是 D1/D2/D7 推迟项的载体。
   ( cd "$rel" && UV_PROJECT_ENVIRONMENT="$SHARED_VENV" \
-      uv sync --all-groups --frozen --no-install-project )
+      uv sync --all-groups --extra ml --frozen --no-install-project )
 
   printf '%s' "$want" > "${SHARED_VENV}/.fingerprint"
   ok "venv 就绪（仅含依赖，代码由 PYTHONPATH 从 release 加载）"

@@ -1,17 +1,21 @@
 [project]
 name = "minimax-agent"
-version = "0.1.5"
+version = "0.1.6"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
 
 # 运行期依赖 —— 按批次逐步引入，不提前背上重依赖。
-# B5/B6 会再加 LLM SDK / LangGraph / Presidio / embedding 模型。
 #
 # OTel 是 B4 引入的：C9 的 `build_telemetry` 声明"缺 OTel 则退回 NoOp"，
 # 但那只是**防御**（部分安装的环境），不是常态 —— 真实部署里遥测是要打开的，
 # 所以这两个包在这里是硬依赖；否则打包出去的服务永远只会走 NoOp 分支，
 # 而那条分支在本地也测不到真实行为。
+#
+# B5 的重依赖（Presidio / sentence-transformers / spacy，含 torch）**不进主依赖**：
+# torch 在 Windows 本地不现实（决策 D7），本地 L0/L1 用 Fake + skipif 测契约，
+# 目标机部署时 ensure_venv 加 `--extra ml` 才装全量（见 deploy/lib/common.sh）。
+# jsonschema 是 C6 工具参数校验，轻量，进主依赖。
 dependencies = [
     "pydantic>=2.9,<3.0",
     "pydantic-settings>=2.5,<3.0",
@@ -21,6 +25,16 @@ dependencies = [
     "uvicorn>=0.32",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "jsonschema>=4.23",
+]
+
+# B5：ML 检测器（C5）的重依赖，只在目标机 venv 安装（--extra ml）。
+# 本地 `uv sync` 不带该 extra，保持轻量。
+[project.optional-dependencies]
+ml = [
+    "presidio-analyzer>=2.2.358",
+    "sentence-transformers>=3.0",
+    "spacy>=3.7,<4.0",
 ]
 
 [dependency-groups]
@@ -45,6 +59,8 @@ packages = [
     "src/guard_contract",
     "src/policy_engine",
     "src/detector_rules",
+    "src/detector_ml",
+    "src/agent_tools",
     "src/llm_minimax",
     "src/agent_service",
     "src/telemetry",

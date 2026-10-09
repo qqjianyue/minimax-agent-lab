@@ -16,9 +16,18 @@ from pathlib import Path
 
 from agent_core.clock import SystemClock
 from agent_core.config import Settings, load_settings
+from agent_core.errors import DependencyNotInstalledError
 from agent_core.ports import LLMPort, TelemetryPort
 from agent_core.version import VersionInfo, get_version_info
+from agent_tools import ToolExecutor, ToolRegistry, build_bank_tools
 from audit_ledger import AuditLedger, JsonlAuditSink, SystemClockAdapter
+from detector_ml import (
+    DetectorRegistry,
+    EmbeddingSimilarityDetector,
+    LLMJudgeDetector,
+    PresidioPiiDetector,
+    SentenceEmbedder,
+)
 from detector_rules.detector import RulesL1Detector
 from detector_rules.redactor import RegexRedactor
 from guard_contract.default_policy import load_default_policy, load_policy_set
@@ -52,6 +61,11 @@ class AppContainer:
     llm: LLMPort
     redactor: Redactor
     version: VersionInfo
+
+    #: C6 工具层（B5 起默认装配银行示例工具）。
+    tools: ToolRegistry
+    tool_executor: ToolExecutor
+
     system_prompt: str = SYSTEM_PROMPT
 
     #: C8 审计账本。刻意**可为空** —— 审计关闭时不该让整个服务起不来，
@@ -79,6 +93,33 @@ class AppContainer:
             logger.warning("telemetry shutdown failed", exc_info=True)
 
 
+def _build_ml_detector_layers(
+    llm: LLMPort,
+    settings: Settings,
+) -> list[tuple[str, object]]:
+    """尽力而为地装配 C5 的 ML 检测器（L2/L3/L4）。
+
+    重依赖（presidio / sentence-transformers）只在目标机 venv 存在（D7）：
+    本地缺依赖时**跳过并记录** —— 跳过是可见的（healthz 的 detectors
+    列表与启动日志都会反映），不是静默降级。judge（L4）无重依赖，但
+    需要已配置的 LLM 端点（没 key 跑了也只会 ERROR）。
+    """
+    layers: list[tuple[str, object]] = []
+    try:
+        layers.append(("l2", PresidioPiiDetector()))
+    except DependencyNotInstalledError as exc:
+        logger.warning("skip L2 pii.presidio: %s", exc)
+    try:
+        layers.append(("l3", EmbeddingSimilarityDetector(SentenceEmbedder())))
+    except DependencyNotInstalledError as exc:
+        logger.warning("skip L3 injection.embedding: %s", exc)
+    if settings.llm.api_key.get_secret_value():
+        layers.append(("l4", LLMJudgeDetector(llm, model=settings.llm.model)))
+    else:
+        logger.warning("skip L4 llm.judge: LLM 未配置")
+    return layers
+
+
 def build_container(
     *,
     settings: Settings | None = None,
@@ -91,6 +132,7 @@ def build_container(
     system_prompt: str | None = None,
     telemetry: TelemetryPort | None = None,
     audit_root: str | Path | None = None,
+    with_ml_detectors: bool = True,
 ) -> AppContainer:
     """组装容器。测试时注入任何一项即可覆盖默认实现。"""
     resolved_settings = (
@@ -106,11 +148,25 @@ def build_container(
         else:
             resolved_policy = load_default_policy()
 
-    resolved_detectors = list(detectors) if detectors is not None else [RulesL1Detector()]
-    engine = PolicyEngine(resolved_policy)
-    pipeline = GuardPipeline(engine, resolved_detectors)  # type: ignore[arg-type]
-
     resolved_llm = llm if llm is not None else MinimaxLLM(resolved_settings.llm)
+    engine = PolicyEngine(resolved_policy)
+
+    resolved_detectors: list[object]
+    pipeline: GuardPipeline
+    if detectors is not None:
+        # 显式注入（测试 / 单测）：保持调用方给定的顺序与语义
+        resolved_detectors = list(detectors)
+        pipeline = GuardPipeline(engine, resolved_detectors)  # type: ignore[arg-type]
+    else:
+        # B5 默认装配：L1 规则 → L2 Presidio → L3 嵌入 → L4 judge，
+        # 分层触发（short_circuit：命中即停，后层只在前层未命中时触发）。
+        layers: list[tuple[str, object]] = [("l1", RulesL1Detector())]
+        if with_ml_detectors:
+            layers.extend(_build_ml_detector_layers(resolved_llm, resolved_settings))
+        registry = DetectorRegistry(layers)
+        resolved_detectors = list(registry.detectors)
+        pipeline = GuardPipeline(engine, resolved_detectors, short_circuit=True)  # type: ignore[arg-type]
+
     resolved_redactor = redactor if redactor is not None else RegexRedactor()
 
     # --- C9 遥测 ---
@@ -153,6 +209,10 @@ def build_container(
             retention_days=resolved_settings.audit.retention_days,
         )
 
+    # --- C6 工具层（B5）：银行示例工具。无重依赖，本地即可装配。 ---
+    resolved_tools = ToolRegistry(build_bank_tools())
+    tool_executor = ToolExecutor(resolved_tools)
+
     return AppContainer(
         settings=resolved_settings,
         guard_settings=resolved_guard,
@@ -165,6 +225,8 @@ def build_container(
         system_prompt=system_prompt or SYSTEM_PROMPT,
         ledger=resolved_ledger,
         instrumentation=instrumentation,
+        tools=resolved_tools,
+        tool_executor=tool_executor,
     )
 
 

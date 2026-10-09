@@ -35,6 +35,9 @@ def make_client(responses=None, **overrides) -> TestClient:
         settings=settings,
         policy=overrides.pop("policy", None) or load_default_policy(),
         llm=llm,
+        # 本文件测 B1-B4 语义：关闭 ML 分层装配（B5 的分层触发在
+        # test_service_tools.py 单独覆盖），FakeLLM 的调用计数不被 judge 干扰
+        with_ml_detectors=False,
         **overrides,
     )
     return TestClient(create_app(container)), llm
@@ -275,7 +278,10 @@ class TestNoCredentialLeakage:
                 raise LLMError("upstream exploded while using sk-abc")
 
         container = build_container(
-            settings=Settings(_env_file=None, llm={"api_key": SECRET}), llm=BrokenLLM()
+            settings=Settings(_env_file=None, llm={"api_key": SECRET}),
+            llm=BrokenLLM(),
+            # 测错误处理语义，不涉及 ML 层：关闭分层装配避免 judge 先于业务 LLM 触发
+            with_ml_detectors=False,
         )
         response = TestClient(create_app(container), raise_server_exceptions=False).post(
             "/chat", json={"message": "你好"}
@@ -294,7 +300,9 @@ class TestNoCredentialLeakage:
                 raise ConfigurationError("api key file missing at /etc/secret/path")
 
         container = build_container(
-            settings=Settings(_env_file=None, llm={"api_key": SECRET}), llm=BrokenLLM()
+            settings=Settings(_env_file=None, llm={"api_key": SECRET}),
+            llm=BrokenLLM(),
+            with_ml_detectors=False,
         )
         response = TestClient(create_app(container), raise_server_exceptions=False).post(
             "/chat", json={"message": "你好"}

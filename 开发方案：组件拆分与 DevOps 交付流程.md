@@ -341,7 +341,7 @@ pytest -m "" -q
 
 ---
 
-> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。B4（C8 `audit_ledger` + C9 `telemetry`）**已完成并在目标机实跑验证**。本地 L0 517 项 / L1 114 项全绿（合并覆盖率 95%）；目标机 L2 冒烟 25/25、L3 功能 30 项零失败（3 项因 B5/B8 组件未实现而显式 skip）。部署根 `/data/workspace/minimax-agent`，当前版本 **0.1.5**，回退目标 0.1.4。下一批为 **B5**（C5 `detector_ml` + C6 `agent_tools`，**首次需要 MiniMax key 的 L2/L3**）。
+> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。B4（C8 `audit_ledger` + C9 `telemetry`）**已完成并在目标机实跑验证**。B5（C5 `detector_ml` + C6 `agent_tools`）**本地已完成**（L0 567 / L1 134 全绿，合并覆盖率 94%），目标机部署进行中 —— 依赖策略按决策 D7 走 `ml` extras（本地不装 torch/presidio/spacy，目标机 `ensure_venv --extra ml` 装全量）；L3 的 FT-07/08 已随 C6 解锁走真实 `/tools/execute` 路径。部署根 `/data/workspace/minimax-agent`，版本 **0.1.6**。下一批为 **B6**（C7 `orchestrator`：多轮 + 工具循环编排，复用 C6 工具层）。
 >
 > **B2 期间修正的设计问题**（已被回归测试锁定）：
 > 1. `min_score=0.0` 的兜底放行规则会让**任何**检测结果都命中规则，导致 fail_mode 永远走不到 —— 已在 `PolicySet._reject_trivial_catch_all` 加载时拒绝，兜底改用 `default_action`。

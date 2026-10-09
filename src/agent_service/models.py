@@ -39,6 +39,21 @@ class ChatRequest(BaseModel):
     request_id: str | None = Field(default=None, max_length=128)
 
 
+class ToolExecuteRequest(BaseModel):
+    """工具执行（C6）。
+
+    调用方**不能自报权限 scope** —— ``caller_scopes`` 由服务端注入
+    （B5 演示为固定基础 scope；B6 由编排层按用户身份注入），否则"权限
+    边界"就退化成"客户端自证无罪"。危险操作由 TOOL 阶段 guard 与
+    executor 的高危标记双重复核。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1, max_length=128)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 # --- 响应 -------------------------------------------------------------------
 
 
@@ -109,6 +124,20 @@ class ChatResponse(BaseModel):
     llm_called: bool
 
 
+class ToolExecuteResponse(BaseModel):
+    """``/tools/execute`` 响应：guard 决策 + 执行结果。"""
+
+    request_id: str
+    #: TOOL 阶段 guard 的决策（危险调用 / PII 等在到达 executor 前被拦）
+    decision: DecisionModel
+    #: executor 的执行结果状态（ok / not_found / invalid_arguments /
+    #: permission_denied / requires_approval / handler_error）
+    status: str
+    #: 执行成功的输出（status=ok 时非空）
+    output: str | None = None
+    requires_human: bool
+
+
 __all__ = [
     "ChatRequest",
     "ChatResponse",
@@ -116,5 +145,7 @@ __all__ = [
     "GuardInspectRequest",
     "GuardInspectResponse",
     "HealthResponse",
+    "ToolExecuteRequest",
+    "ToolExecuteResponse",
     "VersionModel",
 ]
