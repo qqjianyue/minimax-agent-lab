@@ -1,0 +1,10 @@
+{
+  "model": {
+    "package": "en-core-web-lg",
+    "version": "3.8.0",
+    "import_name": "en_core_web_lg",
+    "approx_size_mib": 589,
+    "install_target": "shared/venv",
+    "notes": "版本精确 pin：800MiB 资产跟随 latest 会让应用回退失去意义（与 phoenix tag 固定同理）"
+  }
+}

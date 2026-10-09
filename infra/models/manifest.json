@@ -1,0 +1,24 @@
+{
+  "model": {
+    "repo": "BAAI/bge-base-zh-v1.5",
+    "revision": "f03589ceff5aac7111bd60cfc7d497ca17ecac65",
+    "framework": "sentence-transformers",
+    "dimension": 768,
+    "params": "102M",
+    "approx_size_mib": 400
+  },
+  "files": [
+    "pytorch_model.bin",
+    "config.json",
+    "config_sentence_transformers.json",
+    "sentence_bert_config.json",
+    "modules.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.txt",
+    "1_Pooling/config.json",
+    "README.md",
+    ".gitattributes"
+  ]
+}

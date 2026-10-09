@@ -21,6 +21,29 @@ components:
       首次部署（B3）验证通过后，把 image_tag 从 latest 固定为具体版本号，
       并在应用配置中记录该版本，避免上游 latest 变动导致回退后行为不一致。
 
+  - name: embedding-model
+    description: sentence-transformers 嵌入模型（D1，中文 bge-base-zh-v1.5，768 维）
+    version: "BAAI/bge-base-zh-v1.5@f03589ceff5aac7111bd60cfc7d497ca17ecac65"
+    manifest: infra/models/manifest.json
+    setup_script: infra/models/setup.sh
+    state: not-deployed
+    updated: ""
+    notes: >-
+      目标机**直接下载**（HF_ENDPOINT 镜像备用）；文件级 sha256 在
+      manifest.lock.json（首次 install 后生成，入库作为版本事实）。
+      升级模型 = 改 manifest.revision + 重跑 setup.sh install。
+
+  - name: spacy-model
+    description: spaCy 英文 NER 模型（D2，en_core_web_lg）
+    version: "3.8.0"
+    manifest: infra/spacy/manifest.json
+    setup_script: infra/spacy/setup.sh
+    state: not-deployed
+    updated: ""
+    notes: >-
+      装入 shared/venv（与应用大依赖同 venv，指纹复用兼容）；校验以
+      spacy.load 真实可加载为准；pip 受限时在组件 env 配 PIP_INDEX_URL。
+
 dependencies:
   - name: docker-engine
     version: "29.1.4"
