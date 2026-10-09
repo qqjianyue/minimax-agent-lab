@@ -39,6 +39,24 @@ def _host_of(address) -> str:
     return str(address)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd(monkeypatch, tmp_path):
+    """把每个集成测试的工作目录换到 ``tmp_path``。
+
+    ## 为什么必须这么做
+
+    被测代码有若干"路径相对于当前工作目录"的默认行为，其中最显眼的是
+    C8 审计账本：``audit_root`` 不传时取 ``Path.cwd()``。集成测试如果
+    直接在仓库根跑，**每跑一次就在仓库里攒一个 ``audit/ledger.jsonl``** ——
+    测试产物污染代码库，而且会混进 ``git status``，让人误以为改了什么。
+
+    与其逐个调用点传 ``tmp_path``（这里有 27 处，漏一处就复现），
+    不如把 cwd 整体挪走：**任何**集成测试都不可能再写进仓库。
+    """
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _loopback_only():
     """允许本机回环，阻断一切真实出网。"""

@@ -157,23 +157,6 @@ mask_only() {
   ok "私密配置已刷新"
 }
 
-install_systemd_unit() {
-  local unit_dir="${HOME}/.config/systemd/user"
-  mkdir -p "$unit_dir"
-  # 模板里的 %h 会被 systemd 展开为家目录；AGENT_HOME 在本项目中固定为
-  # /data/workspace/minimax-agent，因此额外生成一个软链接 ~/.config 指向它，
-  # 让 unit 模板保持与家目录无关。
-  ln -sfn "$AGENT_HOME" "${HOME}/.minimax-agent-home"
-
-  local template="${SCRIPT_DIR}/systemd/minimax-agent.service.template"
-  local target="${unit_dir}/${SERVICE_NAME}"
-  # 把 %h 替换为软链接路径，使 unit 不依赖 AGENT_HOME 的具体取值
-  sed 's|%h|'"${HOME}"'/.minimax-agent-home|g' "$template" > "$target"
-  ok "已安装 unit: ${target}"
-  systemctl --user daemon-reload
-  systemctl --user enable "$SERVICE_NAME"
-}
-
 #: 在线测试层。缺 API Key 时**显式跳过并说明**，不静默通过 ——
 #: 一次"全绿"但实际没验证过功能的部署，比一次失败更危险。
 run_online_layers() {

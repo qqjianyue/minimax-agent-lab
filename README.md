@@ -19,6 +19,8 @@ minimax-agent-lab/
 │  ├─ guard_contract/    C2  契约层：DetectorResult / 枚举 / policy schema / 检测器端口
 │  ├─ policy_engine/     C3  策略求值：Decision / PolicyEngine / GuardPipeline / 动作执行 / 脱敏端口
 │  ├─ detector_rules/    C4  L1 规则检测器 + 脱敏器
+│  ├─ audit_ledger/      C8  审计账本：JSONL append-only + 落盘前脱敏 + 保留期 + 检索
+│  ├─ telemetry/         C9  可观测性：span 埋点门面 + 属性脱敏 + OTel/NoOp 实现
 │  ├─ llm_minimax/       MiniMax 客户端（OpenAI 兼容，传输层可注入）
 │  └─ agent_service/     C10 FastAPI 服务：/healthz /chat /guard/inspect
 ├─ tests/
@@ -260,6 +262,107 @@ pipeline.run("drop table customers", stage=GuardStage.TOOL).action
 
 ---
 
+## 可观测性：C8 审计账本 + C9 埋点
+
+银行场景对这两样东西的要求完全不同，因此刻意做成两个独立组件：
+
+| | C8 `audit_ledger` | C9 `telemetry` |
+|---|---|---|
+| 回答的问题 | **谁**、什么时候、按哪条策略、依据什么证据判的 | 这次请求**慢在哪**、花了多少钱 |
+| 写入语义 | append-only，只追加不修改 | 异步批量导出 |
+| 保留期 | 365 天（合规留痕） | 90 天（观测数据） |
+| 脱敏 | **落盘前**强制脱敏，没脱敏器就拒绝构造 | 属性出口拦截 |
+| 默认 | 开启 | **关闭**（收集端 Phoenix 尚未部署，见下） |
+
+### 审计账本
+
+`AuditRecord.from_decision` **强制要求**传入脱敏器，没有就拒绝构造。
+理由是 FT-12 的"只追加不修改"：一旦明文写进 JSONL，就再也删不干净了。
+这条与 `to_audit_record` 的"默认不脱敏"是刻意分工 —— 后者服务于临时排查
+（不落盘），前者服务于落盘。
+
+`JsonlAuditSink` 压根不提供任何改写入口，append-only 不靠调用方自觉。
+
+**账本根目录**按 `显式参数 > audit.root > cwd` 解析。生产上 systemd 注入
+`MINIMAX_AGENT_AUDIT__ROOT=%h/shared` —— 必须落在跨版本共享目录：
+若解析成 cwd（= release 目录），版本更新切 symlink 后新版本会在新目录
+从零写账本，旧记录"消失"，回退时账本跳变，release 清理时历史直接被删。
+审计历史不该是部署的副作用。
+
+账本文件显式设为 `0600`，保留期清理的整文件重写也会**保留原权限** ——
+清理是破坏性操作，顺手把权限放宽回 umask 就等于悄悄放宽了访问控制。
+
+### span 树
+
+埋点只走 `Instrumentation` 这一个入口，span 名字与属性口径由它统一维护：
+
+```
+agent.request              request.id
+├── input_guard            guard.action / guard.rule / guard.latency_ms
+├── llm_call               llm.prompt_tokens / llm.cost
+└── output_guard           guard.action / guard.matched
+```
+
+两个刻意的设计：
+
+1. **检测发生在 span 内部**，不是跑完再补开一个 span 记录结果。
+   反过来写在结构上完全说得通、断言也过得去，但 span 里根本没有检测工作，
+   时长恒等于零，出问题时看不出是检测慢还是别处慢。
+2. **`/chat` 全程共用一个 `request_id`**。它是 trace 与账本的关联键 ——
+   各自生成的话，账本里一次对话会散成两条互不相干的记录，按 id 查只能
+   捞到一半，而"输入放行、输出拦截"恰恰是最需要一次查全的场景。
+
+### 两个默认值，以及为什么
+
+| | 默认 | 理由 |
+|---|---|---|
+| `telemetry.capture_prompts` | `False` | trace 是**可被调阅**的观测库。宁可少一点上下文，也不让 prompt 原文与 PII 进去 |
+| `telemetry.enabled` | `False` | 可观测性依赖收集端真实存在。Phoenix 尚未部署时若默认开启，服务会起一个后台线程不断重连一个没人监听的端点，失败日志能把真正的告警淹掉 —— 观测设施不可用反过来损害了可观测性 |
+
+`telemetry.enabled` 打开后还需要一个**显式的关闭路径**：批量导出是异步的，
+不 flush 的话进程退出时内存队列直接丢掉，丢的往往正是故障现场那几条。
+所以 `TelemetryPort` 带 `shutdown()`，由应用 lifespan 在 `finally` 里调用
+（uvicorn 收到 SIGTERM 后正常退出也走这里）。
+
+### 属性脱敏
+
+脱敏做在**出口**而不是做成调用约定：`set_attribute("prompt", text)` 在业务代码里
+照常写，由适配层在写进 span 前统一拦截。属性名由埋点代码决定，只要某处顺手写了
+一个 `prompt` 属性，明文就已经静默出去了；靠约定迟早会漏。
+
+`FORBIDDEN_ATTRIBUTES`（凭据类）无论 `capture_prompts` 如何设置都直接丢弃，
+连占位符都不给 —— 免得有人去猜是不是真的配了。
+
+过滤**递归**到嵌套的 dict / list，且**顶层与嵌套共用同一套键名规则**。
+这不是洁癖：`set_attribute("llm.cfg", {"api_key": "sk-live-..."})` 会把凭据
+原样送进观测库，而 redactor 兜不住 —— 它只认 PII 模式（身份证/手机号/银行卡），
+对 `sk-` 开头的密钥一无所知。键名才是判断依据，与它出现在第几层无关。
+
+> **这一节的教训**：最早 `OtelSpan.__enter__` 没有把 span 挂进 OTel 的 contextvar，
+> 导致**生产环境父子 span 关系是平的**（所有 span 都成了 root），而且**不报任何错**。
+> 单测之所以一直是绿的，是因为 `InMemoryTelemetry` fake 用自己的栈维护父子关系 ——
+> fake 和代码犯了同一个方向的错，互相印证了错误。
+> 后来用真实 OTel SDK + 内存 exporter 补了一条集成测试才暴露出来，
+> 并做了变异验证（拿掉 attach → 该用例立刻失败）。
+
+### B4 上目标机时暴露的部署缺陷
+
+补了一条静态不变式测试后才发现：`install_systemd_unit` 原本只定义在 `install.sh` 里，
+**`update.sh` 和 `rollback.sh` 都不重新渲染 unit**。
+
+后果正是上面说的那种"以为生效了其实没有"：模板里新增的
+`MINIMAX_AGENT_AUDIT__ROOT` 到不了目标机，跑的还是安装时留下的旧 unit ——
+服务照常健康、接口照常正常，只是账本仍旧写进 release 目录，每次版本更新消失一次。
+**本地跑一万遍也发现不了**，因为本地根本不经过 systemd。
+
+已把该函数提到 `lib/common.sh`，装/更/退三条路径都调用，并加不变式测试
+（切换 release 的脚本必须调用它，且必须排在 `switch_release` 之前）。
+
+同一轮部署还由目标机 L2 抓出第二个真缺陷：账本**文件**是 600，但**目录**是 775 ——
+同组用户读不了文件内容，却能删除或替换整本账本。已改为创建时显式 `chmod 700`。
+
+---
+
 ## 部署
 
 ```
@@ -355,15 +458,19 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | B2 | C3 `policy_engine` + C4 `detector_rules` | ✅ |
 | B3 | C10 `agent_service` + `llm_minimax` + 部署脚本 | ✅ **目标机已实跑验证** |
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
-| B4 | C8 `audit_ledger` + C9 `telemetry` | 待开始 |
+| B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
 | B5 | C5 `detector_ml` + C6 `agent_tools` | 待开始 |
 | B6 | C7 `orchestrator` | 待开始 |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
-测试规模：L0 **437**（+4 平台/依赖相关而跳过）+ L1 **88** = **525**（本地离线，全绿）；
-L2 冒烟 14 + L3 功能 28 = **42**（目标机执行，**已全绿**：L3 中 3 项因 B5/B8 组件未实现而显式 skip）。
+测试规模：L0 **517**（+5：3 项 POSIX 权限位在 Windows 上跳过、2 项需 bash）+ L1 **114** = **631**（本地离线，全绿）；
+L2 冒烟 **25** + L3 功能 **30** = **55**（目标机执行，**已全绿**：L3 中 3 项因 B5/B8 组件未实现而显式 skip）。
 L0+L1 合并覆盖率 **95%**。
+
+> L2 里 11 条是 B4 新增的可观测性冒烟（账本位置 / 权限 / request_id 关联 / 落盘脱敏）。
+> 它们**直接读目标机文件系统**而不只看 HTTP 响应 —— 有一整类问题只在目标机上
+> 才存在：配置到底有没有真的生效。B4 就踩过一次（见下）。
 
 > **覆盖率口径**：`check` 依次跑 L0 和 L1，但**全程只打印一份报告**，且明确标注是合并口径。
 > 各层写入自己的数据文件（`.coverage.l0` / `.coverage.l1`）后再 `coverage combine` ——

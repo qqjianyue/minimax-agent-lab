@@ -25,6 +25,10 @@ EnvironmentFile=-%h/current/.release-env
 EnvironmentFile=-%h/shared/.env
 Environment=MINIMAX_AGENT_SECRETS_FILE=%h/shared/.env
 Environment=MINIMAX_AGENT_MASK_CONFIG_FILE=%h/mask-config.yaml
+# 审计账本根目录：必须指向**跨版本共享**的 shared/ 而不是 current/。
+# 审计历史随 release 走会在版本更新时"消失"（新版本写新目录）、回退时
+# 跳变、release 清理时被删除 —— 合规留痕的历史不该是部署的副作用。
+Environment=MINIMAX_AGENT_AUDIT__ROOT=%h/shared
 # 代码从 **当前 release** 加载，venv 里只有第三方依赖。
 # 这样 current 符号链接就是"现在跑哪份代码"的唯一事实来源 ——
 # 切链接换代码，回退也就真的只是切链接 + 重启，而不是再跑一次安装。

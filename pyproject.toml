@@ -1,13 +1,17 @@
 [project]
 name = "minimax-agent"
-version = "0.1.4"
+version = "0.1.5"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
 
-# 运行期依赖 —— B1 阶段只保留最小集合。
-# LLM SDK / LangGraph / Presidio / embedding 模型在对应批次（B5/B6）再引入，
-# 避免早期就背上 torch 级别的安装成本。
+# 运行期依赖 —— 按批次逐步引入，不提前背上重依赖。
+# B5/B6 会再加 LLM SDK / LangGraph / Presidio / embedding 模型。
+#
+# OTel 是 B4 引入的：C9 的 `build_telemetry` 声明"缺 OTel 则退回 NoOp"，
+# 但那只是**防御**（部分安装的环境），不是常态 —— 真实部署里遥测是要打开的，
+# 所以这两个包在这里是硬依赖；否则打包出去的服务永远只会走 NoOp 分支，
+# 而那条分支在本地也测不到真实行为。
 dependencies = [
     "pydantic>=2.9,<3.0",
     "pydantic-settings>=2.5,<3.0",
@@ -15,6 +19,8 @@ dependencies = [
     "httpx>=0.27",
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [dependency-groups]
@@ -41,6 +47,8 @@ packages = [
     "src/detector_rules",
     "src/llm_minimax",
     "src/agent_service",
+    "src/telemetry",
+    "src/audit_ledger",
 ]
 
 # ---------------------------------------------------------------------------

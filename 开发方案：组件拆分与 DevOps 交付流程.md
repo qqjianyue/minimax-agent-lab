@@ -294,7 +294,7 @@ pytest -m "" -q
 | **B1** | 脚手架 + C1 + C2 | 目录结构、Makefile、CI、L0/L1 绿；`preflight.sh` 能跑 |
 | **B2** | C3 + C4 | 策略引擎 + 规则检测器；FT-02/04 的**离线断言**可测 |
 | **B3** | C10 + C2 暴露的 `/guard/inspect` + L2 冒烟 | **首次部署**，install.sh 跑通，smoke 绿 |
-| **B4** | C8 + C9 | 审计账本 + trace；FT-12/11 可测 |
+| **B4** | C8 + C9 | 审计账本 + trace；FT-12/11 可测 ✅ 目标机已实跑验证 |
 | **B5** | C5 + C6 | ML 检测器 + 工具；**首次需要 MiniMax key 的 L2/L3** |
 | **B6** | C7 | LangGraph 编排；全场景集成 |
 | **B7** | C11 | 评估回归 + 阈值校准报告 |
@@ -341,7 +341,7 @@ pytest -m "" -q
 
 ---
 
-> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。本地 L0 437 项 / L1 88 项全绿（覆盖率 95%）；目标机 L2 冒烟 14/14、L3 功能 28 项零失败（3 项因 B5/B8 组件未实现而显式 skip）。部署根 `/data/workspace/minimax-agent`，当前版本 0.1.4，回退目标 0.1.2。下一批为 **B4**（C8 `audit_ledger` + C9 `telemetry`）。
+> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。B4（C8 `audit_ledger` + C9 `telemetry`）**已完成并在目标机实跑验证**。本地 L0 517 项 / L1 114 项全绿（合并覆盖率 95%）；目标机 L2 冒烟 25/25、L3 功能 30 项零失败（3 项因 B5/B8 组件未实现而显式 skip）。部署根 `/data/workspace/minimax-agent`，当前版本 **0.1.5**，回退目标 0.1.4。下一批为 **B5**（C5 `detector_ml` + C6 `agent_tools`，**首次需要 MiniMax key 的 L2/L3**）。
 >
 > **B2 期间修正的设计问题**（已被回归测试锁定）：
 > 1. `min_score=0.0` 的兜底放行规则会让**任何**检测结果都命中规则，导致 fail_mode 永远走不到 —— 已在 `PolicySet._reject_trivial_catch_all` 加载时拒绝，兜底改用 `default_action`。
@@ -368,5 +368,27 @@ pytest -m "" -q
 > 18. `DecisionModel` 无 `stage` 字段；`detector_count` 统计的是**报出风险的检测结果数**而非"跑过的检测器数"（`RulesL1Detector.detect` 只返回命中的规则），干净回复时为 0 是正确行为。
 >
 > **L2/L3 的固有非确定性**：打的是真实模型且 `temperature=1.0`，实测出现过 FT-01（正常查询）偶发被判 `escalate` 而触发一次**误回退**（同一句话随后连问三次均为 `allow`）；又因 `capture_prompts=false`（银行场景隐私取舍）**无法复现与归因**。因此在线层失败改为**先重试一次**：通过则只告警并记为"偶发波动"，再失败才回退。
+>
+> **B4 期间修正的问题**（第 19 条是本项目至今**最难发现**的一个，值得单独说明）：
+> 19. `OtelSpan.__enter__` 没有把 span 挂进 OTel 的 contextvar。OTel 的子 span parent 是 `tracer.start_span()` 读**当前 context** 推出来的，不 attach 就全是 root —— 于是**生产环境的 span 树是平的**，所有检测点都成了互不相干的根节点，**且不报任何错**。单测一直是绿的，因为 `InMemoryTelemetry` fake 用自己的栈维护父子关系，**fake 和代码犯了同一个方向的错、互相印证了错误**。补了真实 OTel SDK + 内存 exporter 的集成测试才暴露。已加变异验证：拿掉 attach → 父子用例立刻失败。
+> 20. `/chat` 的输入检测与输出检测各自生成了**不同的 `request_id`**（`pipeline.run` 不传就自动生成）→ 账本里一次对话散成两条无法关联的记录，而"输入放行、输出拦截"恰恰是最需要一次查全的场景。已在 `handle_chat` 最外层生成一次并贯穿全程。
+> 21. 检测点 span 是**在检测跑完之后才开的** —— span 里根本没有检测工作，只是一个"报告结论"的壳子，时长恒等于零。已改为检测发生在 span 内部。
+> 22. `opentelemetry-sdk` / `exporter-otlp-proto-http` 根本没进 `pyproject.toml`，`build_telemetry` 一直在走 ImportError 回退分支，真实 OTel 路径**一行都没跑过**。已加为运行期硬依赖并补齐该路径的测试（覆盖率 51% → 99%）。
+> 23. `TelemetryPort` 没有关闭路径，`TracerProvider` **从不被 shutdown**。批量导出是异步的，进程退出时队列里最后几条（往往正是故障现场那几条）随进程一起消失。已加 `shutdown()` 贯穿端口 / 实现 / 门面 / 容器 / lifespan。
+> 24. `TelemetrySettings.enabled` 默认为 `True` 而 Phoenix 尚未部署 → 目标机上会起一个后台线程不断重连没人监听的端点，失败日志淹没真正告警。已改为默认 `False`，等 Phoenix（D4）就位再显式打开。
+> 25. `Instrumentation.trace()` 从未被调用 —— §4.5 的根 span 缺失，`input_guard`/`llm_call`/`output_guard` 全是平铺的根节点。
+>
+> **fake 与真实实现的偏离**（第 19 条暴露出的方法论问题，已写进 README）：内存 fake 可以让"离线跑得通"，但它同时也在**定义**一份与真实实现可能不同的语义。凡是"靠状态推导而非调用方显式声明"的语义（span 父子、contextvar、后台线程、文件锁），fake 都必须被当作**假设**而不是**证据**，并补一条真实实现的集成测试来验证。
+>
+> **B4 代码评审中补上的问题**：
+> 26. span 属性脱敏**只过滤顶层键名** —— `set_attribute("llm.cfg", {"api_key": "sk-live-..."})` 会把凭据原样送进可调阅的观测库。redactor 兜不住，它只认 PII 模式（身份证/手机号/银行卡），对 `sk-` 密钥一无所知。已改为顶层与嵌套共用 `_sanitize_mapping`，嵌套的凭据键与 prompt 键同样被过滤/替换（4 个新用例 + 变异验证）。
+> 27. 审计账本根目录原先只认函数参数 `audit_root`，生产路径（systemd `Environment=`）无从传入 → 落到 cwd = release 目录，**版本更新/回退/清理都会丢审计历史**。已加 `AuditSettings.root`，解析顺序 `显式参数 > audit.root > cwd`，systemd 注入 `MINIMAX_AGENT_AUDIT__ROOT=%h/shared`。已补一条**专门走环境变量**的测试 —— 直接在 `Settings(...)` 里写 root 是另一条路，绕开了 pydantic-settings 的嵌套分隔符映射，那一环断了不会报错，只会静默退回 cwd。
+> 28. `AuditLedger._rewrite` 保留期清理重写文件时按 umask 建临时文件（通常 644）→ **一次清理就把整本账本的访问控制悄悄放宽了**。已改为 `chmod` 保留原文件权限位。
+> 29. `JsonlAuditSink` 建文件时不依赖 umask，显式设为 `0600`。
+> 30. **`install_systemd_unit` 只定义在 `install.sh` 里，`update.sh` / `rollback.sh` 都不重新渲染 unit** —— 这是本项目至今最隐蔽的部署缺陷。unit 模板里的 `Environment=` 是**版本相关资产**，模板新增一行而脚本不刷新，目标机上跑的还是安装时留下的旧 unit：新配置静默失效、**不报任何错**，服务健康、接口正常，只是那个配置压根没生效。B4 的 `MINIMAX_AGENT_AUDIT__ROOT` 就这么丢的，"账本写进 release 目录、随版本更新消失"在本地看起来已修复（本地根本不经过 systemd）。已把该函数提到 `lib/common.sh`，装/更/退三条路径都调用；并加不变式测试：切换 release 的脚本必须调用它，且必须排在 `switch_release` 之前（变异验证：删掉 update.sh 里那行 → 用例立刻失败）。
+> 31. 审计账本**文件**是 600，但**目录**是 775（默认 umask）—— 由目标机 L2 冒烟实测抓出，本地 Windows 看不到。只保护文件是不够的：同组用户读不了文件内容，却能**删除或替换**整本账本，而"删掉证据"比"读到证据"更糟。已改为创建时显式 `chmod 700`，且**只在本类创建时收紧**（已存在的目录可能承载 venv/日志，运维也可能有意改过权限）。
+> 32. B4 的 L2 冒烟一度误报：账本是**首次写入才懒创建**的，而"位置"断言排在"写入"用例之前跑，全新部署上文件还不存在，于是三项全报"账本不存在"——测的其实不是位置，而是"有没有人写过"。已加 autouse fixture 先驱动一次请求。教训：**测试的顺序依赖必须显式处理**，否则"配置正确性"断言会被"数据存在性"断言吃掉。
+>
+> **B4 目标机部署结果**：首次部署 L2 失败并**正确自动回退到 0.1.4**（回退机制本身得到一次真实验证）；修复第 31 条后重新部署全绿 —— L0 517（目标机上 3 项 POSIX 权限位用例真正执行）、L1 114、L2 冒烟 **25/25**、L3 功能 **30**（3 项因 B5/B8 未实现而 skip）。额外脚本验证 14/14：账本落在 `shared/audit/ledger.jsonl`（不在 release 目录）、文件 600 / 目录 700、一次 `/chat` 写两条且共用同一 `request_id`、阶段顺序 input→output、账本全文无明文身份证号与 API Key、无 span 导出失败日志；回归 `/healthz` 版本 0.1.5、注入 block / 正常 allow / PII redact、被拦截时 `llm_called=false`、响应体无 `sk-`。
 >
 > **防复发**：上述 12/13 两类"脚本根本没执行 / 环境没自举"的 bug 靠 `bash -n` 抓不到，已加**静态不变式测试**（`tests/unit/test_deploy_entrypoints.py`）：入口脚本末行必须是 `main "$@"`、用了 `ensure_venv` 就必须调 `ensure_uv`、`ensure_venv`/`run_layer` 必须排在 `switch_release` 之前。另有 `tests/unit/test_deploy_version_contract.py` 直接调真 bash 锁定 bash ↔ Python 的版本号契约与 venv 指纹语义。

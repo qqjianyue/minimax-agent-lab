@@ -164,12 +164,20 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 @dataclass
 class RecordedSpan:
-    """记录下来的 span。"""
+    """记录下来的 span。
+
+    ``parent_name`` 记录**嵌套关系**。架构方案 §4.5 的 span 树
+    （``input_guard`` 下挂子检测点）靠的就是这个 —— 没有它就无法断言
+    树形结构，只能断言"有这些 span"，而后者完全测不到父子关系。
+    """
 
     name: str
     attributes: dict[str, Any] = field(default_factory=dict)
     exceptions: list[str] = field(default_factory=list)
     ended: bool = False
+    parent_name: str | None = None
+    #: 进入顺序，用于断言"先父后子"的时序
+    sequence: int = 0
 
 
 class InMemorySpan:
@@ -188,20 +196,33 @@ class InMemorySpan:
     def __enter__(self) -> InMemorySpan:
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(self, exc_type: object = None, exc: object = None, tb: object = None) -> None:
+        if exc is not None and isinstance(exc, BaseException):
+            self.record_exception(exc)
         self.end()
 
 
 @dataclass
 class InMemoryTelemetry:
-    """内存版遥测端口。满足 :class:`~agent_core.ports.TelemetryPort`。"""
+    """内存版遥测端口。满足 :class:`~agent_core.ports.TelemetryPort`。
+
+    维护一个"当前 span 栈"来还原父子关系 —— 这与 OTel 自己的 contextvar
+    机制对应，但不依赖 OTel，因此 L0/L1 可以完全离线验证 span 树结构。
+    """
 
     spans: list[RecordedSpan] = field(default_factory=list)
+    _stack: list[RecordedSpan] = field(default_factory=list, repr=False)
 
     def start_span(self, name: str, **attributes: Any) -> InMemorySpan:
-        recorded = RecordedSpan(name=name, attributes=dict(attributes))
+        recorded = RecordedSpan(
+            name=name,
+            attributes=dict(attributes),
+            parent_name=self._stack[-1].name if self._stack else None,
+            sequence=len(self.spans),
+        )
         self.spans.append(recorded)
-        return InMemorySpan(recorded)
+        self._stack.append(recorded)
+        return _StackedSpan(recorded, self._stack)
 
     def span_names(self) -> list[str]:
         return [s.name for s in self.spans]
@@ -209,10 +230,47 @@ class InMemoryTelemetry:
     def find(self, name: str) -> list[RecordedSpan]:
         return [s for s in self.spans if s.name == name]
 
+    def roots(self) -> list[RecordedSpan]:
+        """最外层 span（无父）。"""
+        return [s for s in self.spans if s.parent_name is None]
+
+    def children_of(self, name: str) -> list[RecordedSpan]:
+        return [s for s in self.spans if s.parent_name == name]
+
+    def tree(self) -> list[tuple[str, int]]:
+        """把 span 树渲染成 ``(名字, 缩进深度)``，便于断言结构。"""
+        out: list[tuple[str, int]] = []
+
+        def walk(parent: str | None, depth: int) -> None:
+            for span in self.spans:
+                if span.parent_name == parent:
+                    out.append((span.name, depth))
+                    walk(span.name, depth + 1)
+
+        walk(None, 0)
+        return out
+
     def assert_all_ended(self) -> None:
         unfinished = [s.name for s in self.spans if not s.ended]
         if unfinished:
             raise AssertionError(f"存在未结束的 span: {unfinished}")
+
+    def shutdown(self) -> None:
+        """满足端口契约。内存版没有待冲刷的队列，空实现即可。"""
+        return None
+
+
+class _StackedSpan(InMemorySpan):
+    """退出 ``with`` 时把自己从遥测的当前栈里摘掉。"""
+
+    def __init__(self, recorded: RecordedSpan, stack: list[RecordedSpan]) -> None:
+        super().__init__(recorded)
+        self._stack = stack
+
+    def end(self) -> None:
+        super().end()
+        if self._stack and self._stack[-1] is self._recorded:
+            self._stack.pop()
 
 
 # ---------------------------------------------------------------------------

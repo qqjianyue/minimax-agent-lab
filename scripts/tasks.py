@@ -56,7 +56,10 @@ def cmd_setup(_: argparse.Namespace) -> int:
     """安装依赖（含 dev 组）。"""
     uv = shutil.which("uv")
     if uv is None:
-        print("找不到 uv，请先安装：https://docs.astral.sh/uv/getting-started/installation/", file=sys.stderr)
+        print(
+            "找不到 uv，请先安装：https://docs.astral.sh/uv/getting-started/installation/",
+            file=sys.stderr,
+        )
         return 1
     return _run([uv, "sync", "--all-groups"])
 
@@ -166,8 +169,16 @@ def cmd_check(_: argparse.Namespace) -> int:
     """
     steps: list[tuple[str, object]] = [
         ("lint", cmd_lint),
-        ("L0 单元测试", lambda ns: _run_layer("tests/unit", "unit", cov_file=COV_UNIT, report=False)),
-        ("L1 集成测试", lambda ns: _run_layer("tests/integration", "integration", cov_file=COV_INTEGRATION, report=False)),
+        (
+            "L0 单元测试",
+            lambda ns: _run_layer("tests/unit", "unit", cov_file=COV_UNIT, report=False),
+        ),
+        (
+            "L1 集成测试",
+            lambda ns: _run_layer(
+                "tests/integration", "integration", cov_file=COV_INTEGRATION, report=False
+            ),
+        ),
     ]
     for name, fn in steps:
         code = fn(argparse.Namespace())  # type: ignore[operator]

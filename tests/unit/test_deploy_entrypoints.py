@@ -162,3 +162,61 @@ def test_prepares_before_switching_symlink(name: str) -> None:
             f"第 {switch_at + 1} 行）。中途失败会留下 current 已切换、"
             "服务未重启的不一致状态。"
         )
+
+
+#: 会切换 release 的入口 —— 它们都必须在切换前刷新 systemd unit。
+SWITCHING_SCRIPTS = ("install.sh", "update.sh", "rollback.sh")
+
+
+@pytest.mark.parametrize("name", SWITCHING_SCRIPTS)
+def test_refreshes_systemd_unit_before_switching(name: str) -> None:
+    """切换 release 就必须重渲染 systemd unit，且要排在切换之前。
+
+    ## 这个不变式守住什么
+
+    unit 模板里的 ``Environment=`` 是**版本相关资产**。模板新增一行而脚本
+    不刷新时，目标机上跑的还是安装时留下的旧 unit —— 新配置静默失效，
+    **没有任何报错**：服务健康、接口正常，只是那个配置压根没生效。
+
+    B4 的 ``MINIMAX_AGENT_AUDIT__ROOT`` 就是这么丢的：unit 只由 install.sh
+    渲染，于是"审计账本写进 release 目录、随版本更新消失"这个问题在本地
+    看起来已修复（本地根本没走过 unit），一上目标机照旧。
+
+    排在切换之前还有个理由：unit 渲染失败要发生在 symlink 切换之前，
+    否则又会留下"切了一半"的中间状态。
+    """
+    path = DEPLOY_DIR / name
+    if not path.is_file():
+        pytest.skip(f"{name} 不存在")
+
+    text = path.read_text(encoding="utf-8")
+    assert "install_systemd_unit" in text, (
+        f"{name} 会切换 release 但不刷新 systemd unit —— "
+        "unit 里新增的 Environment= 不会生效，且不会报任何错"
+    )
+
+    lines = _meaningful_lines(path)
+    unit_at = next(i for i, ln in enumerate(lines) if "install_systemd_unit" in ln)
+    switch_at = next(i for i, ln in enumerate(lines) if "switch_release" in ln)
+    assert unit_at < switch_at, f"{name}: unit 刷新必须排在 switch_release 之前"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash")
+def test_unit_installer_lives_in_common_library() -> None:
+    """``install_systemd_unit`` 必须定义在公共库里。
+
+    它是装/更/退三条路径共用的：定义在某个入口脚本里，另外两条就静默拿不到。
+    这是个纯结构性陷阱 —— bash 不会告诉你"这个函数不存在"，只会在调用点
+    报 ``command not found``，而那已经是发布流程跑到一半了。
+    """
+    common = DEPLOY_DIR / "lib" / "common.sh"
+    assert "install_systemd_unit()" in common.read_text(encoding="utf-8")
+
+    for name in SWITCHING_SCRIPTS:
+        # 允许**调用**，不允许**重新定义**
+        defining = [
+            ln
+            for ln in _meaningful_lines(DEPLOY_DIR / name)
+            if ln.startswith("install_systemd_unit()")
+        ]
+        assert not defining, f"{name} 重新定义了 install_systemd_unit，应只用公共库的"

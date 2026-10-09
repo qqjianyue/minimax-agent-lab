@@ -430,7 +430,10 @@ run_online_layer_with_retry() {
   local rel="$1" layer="$2" version="$3" retries="${4:-1}"
   local i
   for ((i = 0; i <= retries; i++)); do
-    if AGENT_BASE_URL="$BASE_URL" EXPECTED_VERSION="$version" run_layer "$rel" "$layer"; then
+    # AGENT_HOME 一起传进去：账本类断言需要知道"部署根在哪"，
+    # 让测试自己硬编码目标机路径不如从部署流程拿同一份值。
+    if AGENT_HOME="$AGENT_HOME" AGENT_BASE_URL="$BASE_URL" EXPECTED_VERSION="$version" \
+       run_layer "$rel" "$layer"; then
       if (( i > 0 )); then
         warn "${layer} 第 $((i + 1)) 次尝试通过 —— 判定为模型输出偶发波动，本次不触发回退"
       fi
@@ -443,6 +446,43 @@ run_online_layer_with_retry() {
   done
   return 1
 }
+# ---------------------------------------------------------------------------
+# systemd user unit
+# ---------------------------------------------------------------------------
+
+#: 安装/刷新 systemd user unit。
+#:
+#: Args:
+#:   1: unit 模板路径。默认用本仓库的模板；调用方**应当传目标 release 的**，
+#:      这样回退时 unit 描述的才是真正在跑的那一份。
+#:
+#: 放在 :func:`install_systemd_unit` 意义上的公共库、而不是 install.sh 里的原因：
+#: **unit 也会随版本变**。模板新增一个 ``Environment=``（例如 B4 的
+#: ``MINIMAX_AGENT_AUDIT__ROOT``）时，如果只有 install.sh 会渲染，
+#: update.sh 切完 symlink 直接重启，跑的还是目标机上那份**旧 unit** ——
+#: 新配置静默不生效、没有任何报错、服务照常健康。这种"以为生效了其实没有"
+#: 的失败最难查，所以装/更/退三条路径都必须重新渲染。
+install_systemd_unit() {
+  local template="${1:-${DEPLOY_DIR}/systemd/minimax-agent.service.template}"
+  [[ -f "$template" ]] || die "找不到 unit 模板: ${template}"
+
+  local unit_dir="${HOME}/.config/systemd/user"
+  mkdir -p "$unit_dir"
+  # 模板里的 %h 会被 systemd 展开为**家目录**，而 AGENT_HOME 固定为
+  # /data/workspace/minimax-agent。因此额外生成一个软链接指向它，
+  # 让 unit 模板保持与家目录无关。
+  ln -sfn "$AGENT_HOME" "${HOME}/.minimax-agent-home"
+
+  local target="${unit_dir}/${SERVICE_NAME}"
+  # 先渲染到临时文件再原子替换：半截的 unit 会让 systemd 载入失败，
+  # 服务直接起不来 —— 那比"配置没更新"严重得多。
+  sed 's|%h|'"${HOME}"'/.minimax-agent-home|g' "$template" > "${target}.tmp"
+  mv -f "${target}.tmp" "$target"
+  ok "已刷新 unit: ${target}"
+  systemctl --user daemon-reload
+  systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------------------
 # 服务控制（systemd user，无 sudo）
 # ---------------------------------------------------------------------------

@@ -37,6 +37,12 @@ deploy-state.json
 phoenix_data/
 langfuse-data/
 
+# 本机运行时数据。
+# 审计账本默认写在 cwd 下（audit/ledger.jsonl），本地跑一次服务就会生成。
+# 测试已由 tests/integration/conftest.py 把 cwd 挪到 tmp_path 避免污染仓库，
+# 这里只是给"手动跑一次服务"留的兜底 —— 运行数据永远不该进版本库。
+audit/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -135,18 +135,43 @@ class EmbedderPort(Protocol):
 
 @runtime_checkable
 class SpanPort(Protocol):
-    """单个 span。刻意做窄：只暴露埋点真正需要的三个操作。"""
+    """单个 span。
+
+    刻意做窄：只暴露埋点真正需要的操作。
+
+    **必须是上下文管理器**。理由不是方便，而是 §4.5 要求的 span 树
+    （``input_guard`` 下挂 ``pii_check``、``generation_step_1`` 下挂
+    ``tool_call_search``）靠的就是 ``with`` 的嵌套语义 —— 不引入"当前 span"
+    这类状态，父子关系就无从表达。
+
+    更关键的是异常路径：手工 ``start`` / ``end`` 时，一旦中间抛异常，
+    ``end()`` 永远不会执行，span 悬着不关（内存泄漏，且这条 trace 残缺）。
+    上下文管理器保证"一定关闭"，这是正确性问题，不是风格问题。
+    """
 
     def set_attribute(self, key: str, value: Any) -> None: ...
     def record_exception(self, exc: BaseException) -> None: ...
     def end(self) -> None: ...
+    def __enter__(self) -> SpanPort: ...
+    def __exit__(self, *exc_info: object) -> None: ...
 
 
 @runtime_checkable
 class TelemetryPort(Protocol):
-    """可观测性端口。B9 批次由 OTel 实现，B1 阶段只有 InMemory 版本。"""
+    """可观测性端口。
+
+    嵌套由 ``with`` 的自然嵌套表达，实现方各自维护"当前 span"
+    （OTel 用 contextvar，内存版用栈）。端口刻意不暴露 set_current_span ——
+    那是实现细节，暴露了反而会诱导业务代码手动管理 span 生命周期。
+
+    ``shutdown`` 不是可选的礼貌方法：批量导出的实现会把 span 攒在内存队列里
+    由后台线程异步发送，进程退出时如果不显式 flush，队列里最后那几条
+    （往往正是出事那几条）就跟着进程一起没了。
+    """
 
     def start_span(self, name: str, **attributes: Any) -> SpanPort: ...
+
+    def shutdown(self) -> None: ...
 
 
 @runtime_checkable

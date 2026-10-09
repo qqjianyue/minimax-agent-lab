@@ -36,9 +36,11 @@ L3 功能测试需要能**单独验证检测与策略**，不必经过模型。�
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
-from typing import Annotated
+import time
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -57,6 +59,7 @@ from agent_service.models import (
 )
 from guard_contract.enums import GuardStage, PolicyAction
 from policy_engine.actions import apply_action
+from policy_engine.decision import Decision
 
 logger = logging.getLogger("agent_service")
 
@@ -109,7 +112,12 @@ def _lifespan(container: AppContainer) -> Callable[[FastAPI], AsyncIterator[None
             list(container.detectors),
             bool(container.settings.llm.api_key.get_secret_value()),
         )
-        yield
+        try:
+            yield
+        finally:
+            # 冲刷未导出的 span。放到 finally 是因为 uvicorn 收到 SIGTERM
+            # 后正常退出也会走这里 —— 那正是最需要留住 trace 的时刻。
+            container.shutdown()
 
     return lifespan
 
@@ -147,7 +155,19 @@ def create_app(container: AppContainer) -> FastAPI:
         dep: ContainerDep,
     ) -> GuardInspectResponse:
         """只跑检测与策略，不调用模型。"""
-        decision = dep.pipeline.run(payload.text, stage=payload.stage)
+        # 独立入口，自成一个请求，不与 /chat 共享 request_id。
+        # 仍然开根 span：两个端点在 Phoenix 里应当长得一样，
+        # 否则排查时得先想清楚"这条 trace 来自哪个接口"。
+        request_id = f"req-{uuid4().hex[:12]}"
+        with _trace_span(dep, request_id, **{"chat.has_tools": False}):
+            decision, _ = _run_guarded(
+                dep,
+                span_name="guard_inspect",
+                stage=payload.stage,
+                text=payload.text,
+                request_id=request_id,
+                metadata={"endpoint": "/guard/inspect"},
+            )
         return GuardInspectResponse(
             request_id=decision.request_id,
             decision=DecisionModel.from_decision(decision),
@@ -178,34 +198,172 @@ def create_app(container: AppContainer) -> FastAPI:
     return app
 
 
+def _audit(
+    container: AppContainer,
+    decision: Decision,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """写一条审计记录。
+
+    刻意**吞掉异常**：审计写不进去不能让业务请求失败。
+    银行场景下账本不可写是需要告警的运维问题，但把它变成用户侧的 500
+    只会让故障范围更大。写失败时记 warning，交由部署状态与监控去暴露。
+    """
+    if container.ledger is None:
+        return
+    try:
+        container.ledger.record(decision, metadata=metadata)
+    except Exception as exc:  # noqa: BLE001 - 见上方说明
+        logger.warning("audit write failed: %s: %s", type(exc).__name__, exc)
+
+
+# --- 埋点门面可空时的占位记录器 ---------------------------------------------
+#
+# `AppContainer.instrumentation` 允许为 None（容器被手工构造、尚未接遥测的
+# 场景，例如部分单测）。**用占位对象而不是在业务代码里写 `if inst:` 分支**，
+# 是为了让"有没有埋点"这件事在代码结构上不可见：一旦业务逻辑开始分叉，
+# 两套路径迟早会走出不一样的语义，而这种差异只在关掉埋点时才暴露。
+
+
+class _NullGuardRecorder:
+    """遥测关闭时的检测点记录器。"""
+
+    __slots__ = ()
+
+    def record(self, decision: Decision, *, latency_ms: float) -> None:
+        return None
+
+    def __enter__(self) -> _NullGuardRecorder:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+class _NullLlmRecorder:
+    """遥测关闭时的模型调用记录器。"""
+
+    __slots__ = ()
+
+    def record(self, completion: Any) -> None:
+        return None
+
+    def __enter__(self) -> _NullLlmRecorder:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+@contextmanager
+def _guard_span(
+    container: AppContainer, name: str, stage: GuardStage
+) -> Iterator[Any]:
+    inst = container.instrumentation
+    if inst is None:
+        with _NullGuardRecorder() as recorder:
+            yield recorder
+        return
+    with inst.guard(name, stage) as recorder:
+        yield recorder
+
+
+@contextmanager
+def _llm_span(container: AppContainer, model: str) -> Iterator[Any]:
+    inst = container.instrumentation
+    if inst is None:
+        with _NullLlmRecorder() as recorder:
+            yield recorder
+        return
+    with inst.llm_call(model=model) as recorder:
+        yield recorder
+
+
+@contextmanager
+def _trace_span(container: AppContainer, request_id: str, **attributes: Any) -> Iterator[None]:
+    inst = container.instrumentation
+    if inst is None:
+        yield
+        return
+    with inst.trace(request_id, **attributes):
+        yield
+
+
+def _run_guarded(
+    container: AppContainer,
+    *,
+    span_name: str,
+    stage: GuardStage,
+    text: str,
+    request_id: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[Decision, float]:
+    """跑一个检测点，同时写出审计记录与 span。
+
+    检测**发生在 span 内部**。早前的写法是先把 `pipeline.run` 跑完再补开
+    一个 span 记录结果 —— 那样 span 里根本没有检测工作，只剩一个"报告结论"
+    的壳子，时长恒等于零，出问题时 trace 上看不出是检测慢还是别处慢。
+
+    Args:
+        span_name: span 名。/chat 用 ``input_guard`` / ``output_guard``。
+        request_id: 传给检测流水线。**同一次对话的多个检测点必须共用同一个**
+            —— 否则账本里一次对话会散成几条互不相干的记录，出问题时
+            无法把"这次为什么被拦"和"模型返回了什么"串起来。
+
+    Returns:
+        ``(决策, 检测耗时毫秒)``。
+    """
+    with _guard_span(container, span_name, stage) as recorder:
+        started = time.perf_counter()
+        decision = container.pipeline.run(text, stage=stage, request_id=request_id)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        recorder.record(decision, latency_ms=latency_ms)
+    _audit(container, decision, metadata=metadata)
+    return decision, latency_ms
+
+
 def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
     """单轮对话：输入检测 → 生成 → 输出检测。
 
     B6 之前不含工具调用与多轮记忆，但检测点位置与最终动作合成逻辑已就位，
     届时只需把中间段替换为 LangGraph 节点，判定语义不变。
     """
-    # --- 1. 输入检测（环绕拦截）---
-    input_decision = container.pipeline.run(payload.message, stage=GuardStage.INPUT)
-    input_outcome = apply_action(
-        input_decision.action, payload.message, redactor=container.redactor
-    )
+    # 整次对话共用一个 request_id：它是 trace 与审计账本的关联键，
+    # 在最外层生成一次，下游检测点直接复用。
+    request_id = f"req-{uuid4().hex[:12]}"
 
-    # 被拦下或需人工时，不调用模型 —— 省额度，也避免危险内容进入模型上下文
-    if input_decision.action is PolicyAction.BLOCK or input_decision.requires_human:
-        return ChatResponse(
-            request_id=input_decision.request_id,
-            response=input_outcome.text,
-            action=input_decision.action,
-            input_guard=DecisionModel.from_decision(input_decision),
-            output_guard=None,
-            requires_human=input_decision.requires_human,
-            redacted=input_outcome.changed,
-            llm_called=False,
+    with _trace_span(
+        container, request_id, **{"chat.has_tools": False}
+    ):
+        # --- 1. 输入检测（环绕拦截）---
+        input_decision, _ = _run_guarded(
+            container,
+            span_name="input_guard",
+            stage=GuardStage.INPUT,
+            text=payload.message,
+            request_id=request_id,
+            metadata={"endpoint": "/chat"},
+        )
+        input_outcome = apply_action(
+            input_decision.action, payload.message, redactor=container.redactor
         )
 
-    # --- 2. 生成（外部资产；遥测在调用侧闭环）---
-    completion = container.llm.complete(
-        LLMRequest(
+        # 被拦下或需人工时，不调用模型 —— 省额度，也避免危险内容进入模型上下文
+        if input_decision.action is PolicyAction.BLOCK or input_decision.requires_human:
+            return ChatResponse(
+                request_id=input_decision.request_id,
+                response=input_outcome.text,
+                action=input_decision.action,
+                input_guard=DecisionModel.from_decision(input_decision),
+                output_guard=None,
+                requires_human=input_decision.requires_human,
+                redacted=input_outcome.changed,
+                llm_called=False,
+            )
+
+        # --- 2. 生成（外部资产；遥测在调用侧闭环）---
+        llm_request = LLMRequest(
             model=container.settings.llm.model,
             messages=(
                 LLMMessage(role="system", content=container.system_prompt),
@@ -213,25 +371,36 @@ def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
             ),
             temperature=1.0,
         )
-    )
+        with _llm_span(container, container.settings.llm.model) as call:
+            completion = container.llm.complete(llm_request)
+            call.record(completion)
 
-    # --- 3. 输出检测（必须发生在返回用户之前，此位置不可后移）---
-    output_decision = container.pipeline.run(completion.content, stage=GuardStage.OUTPUT)
-    output_outcome = apply_action(
-        output_decision.action, completion.content, redactor=container.redactor
-    )
+        # --- 3. 输出检测（必须发生在返回用户之前，此位置不可后移）---
+        output_decision, _ = _run_guarded(
+            container,
+            span_name="output_guard",
+            stage=GuardStage.OUTPUT,
+            text=completion.content,
+            request_id=request_id,
+            metadata={"endpoint": "/chat"},
+        )
+        output_outcome = apply_action(
+            output_decision.action, completion.content, redactor=container.redactor
+        )
 
-    return ChatResponse(
-        request_id=input_decision.request_id,
-        response=output_outcome.text,
-        action=stricter(input_decision.action, output_decision.action),
-        input_guard=DecisionModel.from_decision(input_decision),
-        output_guard=DecisionModel.from_decision(output_decision),
-        requires_human=input_decision.requires_human or output_decision.requires_human,
-        redacted=input_outcome.changed or output_outcome.changed,
-        usage=_usage_dict(completion.usage),
-        llm_called=True,
-    )
+        return ChatResponse(
+            request_id=input_decision.request_id,
+            response=output_outcome.text,
+            action=stricter(input_decision.action, output_decision.action),
+            input_guard=DecisionModel.from_decision(input_decision),
+            output_guard=DecisionModel.from_decision(output_decision),
+            requires_human=(
+                input_decision.requires_human or output_decision.requires_human
+            ),
+            redacted=input_outcome.changed or output_outcome.changed,
+            usage=_usage_dict(completion.usage),
+            llm_called=True,
+        )
 
 
 def _usage_dict(usage: TokenUsage) -> dict[str, int]:

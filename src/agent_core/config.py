@@ -46,6 +46,15 @@ class LLMSettings(BaseModel):
     timeout_s: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)
 
+    #: 每百万 token 单价，用于 `llm_call` span 的 cost 口径（FT-11）。
+    #:
+    #: 默认 0.0 表示**未配置**，不是"免费"。这样区分很重要：
+    #: 成本为 0 的 trace 会被误读成"这次调用没花钱"，而真相是"我们没填单价"。
+    #: 真实单价随官方调价变动，因此属于**部署配置**而非代码常量 ——
+    #: 改价不需要改代码、不需要重新发版。
+    price_input_per_million: float = Field(default=0.0, ge=0.0)
+    price_output_per_million: float = Field(default=0.0, ge=0.0)
+
     @model_validator(mode="after")
     def _load_api_key_from_file(self) -> LLMSettings:
         """``api_key`` 为空时从 ``api_key_file`` 读取。
@@ -91,14 +100,42 @@ class LLMSettings(BaseModel):
 
 
 class TelemetrySettings(BaseModel):
-    """可观测性配置（横切面）。"""
+    """可观测性配置（横切面）。
 
-    enabled: bool = True
+    ``enabled`` 默认 **False**：可观测性依赖收集端（Phoenix）真实存在。
+    Phoenix 尚未部署时若默认开启，服务会起一个后台导出线程，不断尝试连接
+    一个没人监听的端点，失败日志能把真正的告警淹掉 —— 观测设施不可用
+    反过来损害了可观测性。Phoenix 就位后按需在配置里打开即可。
+    """
+
+    enabled: bool = False
     service_name: str = "minimax-agent"
     phoenix_endpoint: str = "http://127.0.0.1:6006"
     # 银行场景默认不把 prompt/response 原文写入 trace
     capture_prompts: bool = False
     retention_days: int = Field(default=90, ge=1)
+
+
+class AuditSettings(BaseModel):
+    """审计账本配置（C8）。
+
+    ``retention_days`` 与 :class:`TelemetrySettings` 的同名字段是两回事：
+    审计账本是**合规留痕**，保留期通常更长，且不可被观测系统的策略带偏。
+
+    ``root``：账本根目录。相对路径 ``path`` 会挂在 ``root`` 下。
+    生产部署必须指向**跨版本共享目录**（如 ``%h/shared``，systemd 已注入
+    ``MINIMAX_AGENT_AUDIT__ROOT``）—— 审计历史随版本走会丢：
+    版本更新切 symlink 后新版本在新目录从零写账本，旧记录"消失"，
+    回退时账本跳变，release 清理时历史被直接删除。
+    ``root`` 为空时由容器决定（本地开发用当前工作目录，测试显式传
+    ``audit_root`` 覆盖）。
+    """
+
+    enabled: bool = True
+    root: Path | None = None
+    #: 相对路径会挂在 root 下（生产为 shared/audit/，跨版本共享，回退不丢历史）
+    path: Path = Path("audit/ledger.jsonl")
+    retention_days: int = Field(default=365, ge=1)
 
 
 class AppSettings(BaseModel):
@@ -141,6 +178,7 @@ class Settings(BaseSettings):
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
+    audit: AuditSettings = Field(default_factory=AuditSettings)
     app: AppSettings = Field(default_factory=AppSettings)
 
     @classmethod
@@ -187,6 +225,7 @@ __all__ = [
     "DEFAULT_MINIMAX_BASE_URL",
     "ENV_PREFIX",
     "AppSettings",
+    "AuditSettings",
     "LLMSettings",
     "Settings",
     "TelemetrySettings",

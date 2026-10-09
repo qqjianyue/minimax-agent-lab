@@ -110,6 +110,11 @@ main() {
 
   # --- 5. SWITCH ------------------------------------------------------
   step 5 7 "切换版本并重启"
+  # unit 必须跟着 release 一起刷新。模板里的 Environment= 是版本相关资产：
+  # 不重渲染就跑的还是目标机上那份旧 unit，新配置静默失效、服务却照常健康
+  # （例如 B4 的 MINIMAX_AGENT_AUDIT__ROOT 缺失 → 账本写进 release 目录）。
+  # 放在 switch_release 之前，与本文件"准备工作先于切换"的原则一致。
+  install_systemd_unit "${rel}/deploy/systemd/minimax-agent.service.template"
   switch_release "$NEW_RELEASE"
   service_restart
   if ! wait_healthy 30; then

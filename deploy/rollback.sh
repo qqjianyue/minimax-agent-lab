@@ -59,6 +59,10 @@ main() {
   ensure_uv
   ensure_venv "$dir"
 
+  # unit 用**目标 release** 的模板渲染：回退后 unit 描述的应当是真正在跑的
+  # 那一份，而不是留下新版本的配置。
+  install_systemd_unit "${dir}/deploy/systemd/minimax-agent.service.template"
+
   # 回退前把当前版本记为 previous：万一这次回退也不对，还能再退回去
   if [[ -n "$current" && "$current" != "<无>" && -d "$(release_dir "$current")" ]]; then
     ln -sfn "$(release_dir "$current")" "${PREVIOUS_LINK}.tmp"
