@@ -57,6 +57,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.unit)
         elif "tests/integration/" in path and item.get_closest_marker("integration") is None:
             item.add_marker(pytest.mark.integration)
+        elif "tests/eval/" in path and item.get_closest_marker("eval") is None:
+            item.add_marker(pytest.mark.eval)
         elif ("tests/smoke/" in path or "tests/functional/" in path) and item.get_closest_marker(
             "target"
         ) is None:

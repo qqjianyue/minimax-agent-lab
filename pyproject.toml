@@ -1,6 +1,6 @@
 [project]
 name = "minimax-agent"
-version = "0.1.10"
+version = "0.1.11"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -70,6 +70,7 @@ packages = [
     "src/agent_service",
     "src/telemetry",
     "src/audit_ledger",
+    "src/eval_harness",
 ]
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ addopts = "-m 'not target' --strict-markers -q"
 markers = [
     "unit: L0 纯函数单元测试，完全离线",
     "integration: L1 集成测试，使用 Fake 依赖，完全离线",
+    "eval: L4 评估层（B7 C11），离线指标计算与 Fake 跑分",
     "target: 仅在目标机执行的测试，需要真实模型或网络（smoke / functional）",
 ]
 

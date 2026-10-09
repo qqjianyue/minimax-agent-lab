@@ -3,7 +3,7 @@
 
 TASKS := uv run python scripts/tasks.py
 
-.PHONY: setup test-unit test-int test-offline test-target lint fmt check
+.PHONY: setup test-unit test-int test-offline test-target test-eval lint fmt check
 
 setup:
 	$(TASKS) setup
@@ -19,6 +19,9 @@ test-offline:
 
 test-target:
 	$(TASKS) test-target
+
+test-eval:
+	$(TASKS) test-eval
 
 lint:
 	$(TASKS) lint

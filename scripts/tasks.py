@@ -120,6 +120,12 @@ def cmd_test_target(_: argparse.Namespace) -> int:
     return _pytest("-m", "target", "--allow-network")
 
 
+def cmd_test_eval(_: argparse.Namespace) -> int:
+    """L4 评估层（B7 C11）：数据集 / 指标 / 阈值 / 报告，离线 Fake 依赖。"""
+    print("\n[i] 覆盖率口径：L4 评估层（不计入 L0+L1 部署闸门）。\n")
+    return _pytest("tests/eval", "-m", "eval", "-q")
+
+
 def cmd_lint(_: argparse.Namespace) -> int:
     # ruff 是 dev group 依赖，恒定存在于当前 venv，不依赖 uv 是否在 PATH
     return _run([sys.executable, "-m", "ruff", "check", "src", "tests"])
@@ -204,6 +210,7 @@ COMMANDS = {
     "test-int": cmd_test_integration,
     "test-offline": cmd_test_offline,
     "test-target": cmd_test_target,
+    "test-eval": cmd_test_eval,
     "lint": cmd_lint,
     "fmt": cmd_fmt,
     "check": cmd_check,

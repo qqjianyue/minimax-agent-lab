@@ -461,12 +461,43 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
 | B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ **目标机 v0.1.6 实跑验证** |
 | B6 | C7 `orchestrator` | ✅ **目标机 v0.1.9 实跑验证**；L2 冒烟账本断言放宽（编排下工具循环产生 TOOL 记录，`>=2`）→ v0.1.10 |
-| B7 | C11 `eval_harness` | 待开始 |
+| B7 | C11 `eval_harness` | ✅ 本地全绿（L0 577+ / L1 139+ / L4 评估层）；待目标机 v0.1.11 部署 + 真实红队跑分 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
-测试规模：L0 **577**（+10：B6 新增 orchestrator 全分支用例）+ L1 **139**（+5：/chat 编排端到端）= **716**（本地离线，全绿）；
-L2 冒烟 **25** + L3 功能 **34**（FT-13/14 随 B6 解锁）= **59**（目标机执行：FT-09 需 B8、FT-11 需 D4，仍显式 skip）。
+测试规模：L0 **577**（+10：B6 新增 orchestrator 全分支用例；B7 另增 eval 5 组 unit）+ L1 **139**（+5：/chat 编排端到端）= **716**（本地离线，全绿）；
+L2 冒烟 **25** + L3 功能 **34**（FT-13/14 随 B6 解锁）= **59**（目标机执行：FT-09 需 B8、FT-11 需 D4，仍显式 skip）；
+L4 评估层 **tests/eval**（B7，Fake 依赖离线）：数据集 / 指标 / 阈值校准 / 报告端到端。
 L0+L1 合并覆盖率保持 **94%** 以上（门槛 89.9）。
+
+### B7 变更要点（v0.1.11）
+
+- **C11 `eval_harness`（评估回归 + 阈值校准，开发工具非常驻）**：
+  - 数据集加载器：`EvalCase`/`EvalDataset`/`load_dataset`，内置红队集
+    `data/redteam.json` —— 直接注入 ×4 / 数据泄露 ×3 / 工具滥用 ×3 /
+    良性 ×6（含"带『忽略』字眼的正常改口"FP 哨兵）/ 间接注入 ×2
+    **disabled**（B8 前不计分，报告单列）—— 测试集覆盖四类攻击 + FP 监控。
+  - 指标计算：`ConfusionMatrix` + P/R/F1/Acc（攻击=正类，拦截=预测正类；
+    **redact/rewrite/require_approval/escalate 均算拦截**，与策略引擎
+    dataflow 语义对齐；分母 0 → 0.0 而非抛异常）。
+  - 阈值扫描：`scan_thresholds` / `calibrate_threshold`（无约束最大化 F1；
+    `min_recall` 业务约束先过滤再选 —— 漏检不可接受的合规场景）。
+  - 评估运行器：`EvalRunner` 双模式 —— **detector 级**（单检测器 score +
+    阈值校准）与 **pipeline 级**（GuardPipeline 决策 action → 拦截判定，
+    回归跑分）；产出统一 `CaseVerdict`。
+  - 报告：`build_report`/`render_report`/`save_report` —— 整体 + 分类指标
+    + FP/FN 逐条明细 + disabled 单列 + 阈值扫描表；JSON 落盘供历史对比。
+  - CLI：`python -m eval_harness list|metrics|calibrate`（离线；真实跑分
+    走 `deploy/eval.sh`，不把服务装配拖进入口）。
+- **`deploy/eval.sh`**：目标机真实红队跑分 —— 复刻 systemd 服务环境
+  （shared/.env + mask-config + current/src），`build_container()` 组装
+  真实 pipeline（short_circuit 分层），跑分报告落
+  `shared/data/reports/eval-<version>-<ts>.json`。不随 update.sh 自动执行
+  （评估打真实模型有成本，按需运行）。
+- **L4 评估层**：`tests/eval/`（marker `eval`）+ `tasks.py test-eval` +
+  `make test-eval` —— 离线 Fake 跑分端到端（含"良性误伤监控"断言）。
+- **评估方法论口径（面试）**：threshold 校准是**风险决策** —— FP（误杀）
+  损失用户体验、FN（漏检）可能造成合规事故，`min_recall` 约束即
+  "访问核心数据的 Agent 漏检不可接受"的工程化表达。
 
 ### B6 变更要点（v0.1.7）
 
