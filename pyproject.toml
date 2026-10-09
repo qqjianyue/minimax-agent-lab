@@ -1,6 +1,6 @@
 [project]
 name = "minimax-agent"
-version = "0.1.8"
+version = "0.1.9"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"

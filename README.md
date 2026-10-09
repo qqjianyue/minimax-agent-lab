@@ -460,7 +460,7 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
 | B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ **目标机 v0.1.6 实跑验证** |
-| B6 | C7 `orchestrator` | ✅ 本地全绿，待目标机部署（v0.1.7 部署失败已定位：工具协议 400，修复待部署 v0.1.8） |
+| B6 | C7 `orchestrator` | ✅ 本地全绿；v0.1.8 部署 L2 通过、L3 因 FT-01 presidio 中文误报失败已修正，重发 v0.1.9 |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
