@@ -3,21 +3,44 @@
 覆盖 C6 端到端（HTTP 层）：TOOL 阶段 guard → executor 安全链 → 响应。
 装配测试覆盖 B5 的分层默认装配：本地无重依赖时 L2/L3 跳过、judge 按
 LLM 配置装配、short_circuit 端到端生效（judge 只在 L1 未命中时触发）。
+
+可移植性约定：目标机 venv 装配了 ML 依赖（presidio / spacy / bge），
+``make_client(ml=True)`` 在目标机上会**真实装配** L2/L3 —— 凡是验证
+"本地无依赖时的降级路径"的测试，必须按依赖可用性跳过（skipif），
+不能让断言依赖"本机恰好没装"这一环境事实。
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_core.config import Settings
 from agent_service.app import create_app
 from agent_service.container import build_container
+from detector_ml import LLMJudgeDetector
+from detector_rules.detector import RulesL1Detector
 from guard_contract.default_policy import load_default_policy
 from tests.fakes import FakeLLM, make_judge_response, make_response
 
 SECRET = "sk-service-test-key-9999"
+
+
+def _ml_deps_available() -> bool:
+    """真实 ML 检测器（L2 presidio / L3 embedding）能否在本机装配。
+
+    目标机（--extra ml + D1/D2 模型已部署）为 True，本地开发机为 False。
+    """
+    try:
+        import presidio_analyzer  # noqa: F401, PLC0415
+        import spacy  # noqa: PLC0415
+
+        spacy.load("en_core_web_lg")
+        return True
+    except Exception:  # noqa: BLE001 - 探测环境，任何失败都视为不可用
+        return False
 
 
 def make_client(
@@ -139,6 +162,10 @@ class TestToolExecute:
 
 
 class TestContainerAssembly:
+    @pytest.mark.skipif(
+        _ml_deps_available(),
+        reason="目标机已装配 ML 依赖：无本地降级路径可验证",
+    )
     def test_default_assembly_local_skips_heavy_layers(self) -> None:
         """本地无 presidio / spacy：L2/L3 跳过（可见），L1 + judge（有 key）装配。"""
         client, _ = make_client(ml=True, llm_key=SECRET)
@@ -149,9 +176,13 @@ class TestContainerAssembly:
         assert "injection.embedding" not in detectors
 
     def test_without_llm_key_judge_skipped(self) -> None:
+        # 核心语义：没有 LLM key 时 judge 不装配。heavy 层（L2/L3）是否
+        # 装配取决于目标机依赖状态，不属于本测试的断言范围 —— 不能写死
+        # ``== ["rules.l1"]``，否则目标机（依赖齐全）上必然误报。
         client, _ = make_client(ml=True, llm_key="")
         detectors = client.get("/healthz").json()["detectors"]
-        assert detectors == ["rules.l1"]
+        assert "rules.l1" in detectors
+        assert "llm.judge" not in detectors
 
     def test_ml_disabled_keeps_old_semantics(self) -> None:
         client, _ = make_client(ml=False)
@@ -181,8 +212,21 @@ class TestContainerAssembly:
         assert body["llm_called"] is False
 
     def test_judge_benign_allows_when_l1_misses(self) -> None:
-        client, llm = make_client(ml=True)  # judge 默认 benign
-        body = client.post("/chat", json={"message": "定期存款和活期存款的区别是什么？"}).json()
+        # 显式注入 [L1, judge]，不经过默认装配：真实 L2/L3（目标机上的
+        # presidio en 模型对中文误报实体、bge 中文模型对英文误命中）会
+        # 干扰"judge 兜底放行"的验证对象。这里要测的是分层语义——
+        # L1 未命中时 judge 判 benign 即放行，与机器上的 ML 依赖状态无关。
+        llm = FakeLLM(judge_responses=[make_judge_response("benign", 1.0)])
+        container = build_container(
+            settings=Settings(_env_file=None, llm={"api_key": SECRET, "model": "MiniMax-M3"}),
+            policy=load_default_policy(),
+            llm=llm,
+            detectors=[RulesL1Detector(), LLMJudgeDetector(llm, model="MiniMax-M3")],
+        )
+        client = TestClient(create_app(container))
+        body = client.post(
+            "/chat", json={"message": "定期存款和活期存款的区别是什么？"}
+        ).json()
         assert body["action"] == "allow"
         assert llm.judge_call_count >= 1
 

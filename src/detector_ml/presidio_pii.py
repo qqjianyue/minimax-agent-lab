@@ -55,7 +55,12 @@ def _load_analyzer(language: str) -> Any:
     try:
         # AnalyzerEngine 默认用 spacy en_core_web_lg；模型缺失时构造会失败
         return AnalyzerEngine()
-    except Exception as exc:  # pragma: no cover - 同上，本地不触发
+    except (Exception, SystemExit) as exc:  # pragma: no cover - 同上，本地不触发
+        # 必须连 SystemExit 一起捕获：presidio 发现模型缺失时会在内部调
+        # `spacy.cli.download`（spacy 3.8 走 uv pip install），下载失败时
+        # 它抛的是 SystemExit（BaseException）而不是 Exception ——
+        # 只捕获 Exception 会让它在离线环境（如 L0 测试）直接杀掉进程。
+        # 模型未部署是"检测器不可用"的业务状态，不是进程级故障。
         raise DependencyNotInstalledError(
             "Presidio 初始化失败（spacy 模型未就绪？"
             f"先跑 infra/spacy/setup.sh install）：{type(exc).__name__}"

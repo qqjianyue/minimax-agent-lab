@@ -158,7 +158,25 @@ require_cmd() {
 #: 刻意**不在 preflight.sh 里装**：preflight 是只读体检工具，改环境是
 #: 安装脚本的职责。两者分开，才能既保证 install 自洽，又保持 preflight
 #: 随时可以安全地重复运行。
+#: 让 uv 缓存落在大分区，而不是 /home（目标机 /home 常被分配得很小）。
+#:
+#: 为什么部署脚本要自己设置而不是依赖 shell 配置：.bashrc 里的
+#: ``export UV_CACHE_DIR=...`` 只在**交互**会话生效 —— 部署脚本经
+#: ``ssh host "cmd"`` 非交互执行时 .bashrc 根本不加载，uv 于是回落到
+#: ``$HOME/.cache/uv``，在 /home 只有几 GB 的机器上必然写爆（实测：
+#: CUDA 版 torch 下载时 ``No space left on device``）。
+#:
+#: 优先级：env 已显式设置 UV_CACHE_DIR → 用已存在的 /data/workspace/.cache/uv
+#: （缓存可复用）→ 默认值兜底。目录不存在则创建。
+ensure_uv_cache() {
+  local dir="${UV_CACHE_DIR:-/data/workspace/.cache/uv}"
+  mkdir -p "$dir"
+  export UV_CACHE_DIR="$dir"
+  ok "uv 缓存目录: ${UV_CACHE_DIR}"
+}
+
 ensure_uv() {
+  ensure_uv_cache
   if command -v uv >/dev/null 2>&1; then
     ok "uv 已就绪: $(uv --version 2>/dev/null | head -1)"
     return 0
@@ -312,6 +330,42 @@ EOF
   sed -i 's/\.dirty$//' "${rel}/.release-env"
 }
 
+#: 把 infra 组件的**运行时变量**合并进 shared/.env（幂等，可重复执行）。
+#:
+#: 背景：infra/*/env 是各组件（D1 models / D2 spacy）自己维护的机器配置，
+#: 安装期由组件 setup.sh 消费；但其中一部分变量**服务进程运行时**也要读
+#: （systemd unit 的 EnvironmentFile 之一就是 shared/.env）。此前两者没有
+#: 打通 —— 目标机上 D1 部署好了、MODELS_HOME 却没进 shared/.env，
+#: 服务进程里 SentenceEmbedder 缺 MODELS_HOME，回退到 HF 仓库名联网加载
+#: 模型，在 L3 的 5s 检测墙钟内必然超时 → pipeline fail-closed → 全 block。
+#:
+#: 只同步组件 env 里声明为"运行时必需"的键（见函数体映射），不碰
+#: shared/.env 里的其它键（用户手工配置）。部署流程负责同步，组件仍各自
+#: 管理自己的 env。
+sync_component_env() {
+  local rel="$1"
+  local target="${SHARED_ENV}"
+  if [[ ! -f "$target" ]]; then
+    : > "$target"
+    chmod 600 "$target"
+  fi
+
+  # 组件 env 文件 → 需要同步进 shared/.env 的运行时键
+  local -r models_env="${rel}/infra/models/env"
+  if [[ -f "$models_env" ]]; then
+    local value
+    value="$(sed -n 's/^MODELS_HOME=//p' "$models_env" | tail -1 || true)"
+    if [[ -n "$value" ]]; then
+      if grep -q '^MODELS_HOME=' "$target"; then
+        sed -i "s|^MODELS_HOME=.*|MODELS_HOME=${value}|" "$target"
+      else
+        printf 'MODELS_HOME=%s\n' "$value" >> "$target"
+      fi
+      ok "已同步组件运行时变量 MODELS_HOME -> ${SHARED_ENV}"
+    fi
+  fi
+}
+
 stored_fingerprint() {
   local marker="${SHARED_VENV}/.fingerprint"
   [[ -f "$marker" ]] && cat "$marker" || echo "none"
@@ -384,8 +438,16 @@ ensure_venv() {
   # --extra ml：B5 起目标机 venv 安装 ML 检测器重依赖（Presidio /
   # sentence-transformers / spacy，含 torch）。本地 `uv sync` 不带该 extra，
   # 保持 Windows 轻量 —— 依赖差异正是 D1/D2/D7 推迟项的载体。
+  # 该 extra 只在 pyproject 声明了才带：**B5 之前的版本没有 ml extra**，
+  # 回退到旧版本时若仍带 --extra ml，uv sync 会报 "Extra `ml` is not
+  # defined"，手动回退（rollback.sh）直接挂掉。按目标 release 的 pyproject
+  # 能力决定，而不是按"当前 common.sh 的能力"。
+  local sync_args=(--all-groups --frozen --no-install-project)
+  if grep -qE '^ml[[:space:]]*=' "${rel}/pyproject.toml" 2>/dev/null; then
+    sync_args+=(--extra ml)
+  fi
   ( cd "$rel" && UV_PROJECT_ENVIRONMENT="$SHARED_VENV" \
-      uv sync --all-groups --extra ml --frozen --no-install-project )
+      uv sync "${sync_args[@]}" )
 
   printf '%s' "$want" > "${SHARED_VENV}/.fingerprint"
   ok "venv 就绪（仅含依赖，代码由 PYTHONPATH 从 release 加载）"

@@ -42,11 +42,32 @@ require_env_file() {
   fi
 }
 
+require_tools() {
+  # uv 创建的 venv 默认不带 pip（No module named pip），统一走 uv pip install。
+  # 非交互 ssh 会话 PATH 常缺 ~/.local/bin（uv 默认安装位置），先补再查。
+  export PATH="${HOME}/.local/bin:${PATH}"
+  # 同样地，非交互会话不加载 .bashrc，UV_CACHE_DIR 的声明不生效；
+  # 必须自己设 —— 否则缓存落到 $HOME/.cache/uv，在 /home 很小的机器上
+  # 下载大 wheel（如 torch）会 No space left on device。
+  local uv_cache="${UV_CACHE_DIR:-/data/workspace/.cache/uv}"
+  mkdir -p "${uv_cache}"
+  export UV_CACHE_DIR="${uv_cache}"
+  for cmd in uv python3; do
+    command -v "$cmd" >/dev/null 2>&1 || die "未找到 ${cmd}（需要 uv：curl -LsSf https://astral.sh/uv/install.sh | sh）"
+  done
+}
+
 venv_python() { echo "${AGENT_HOME}/shared/venv/bin/python"; }
 
 # 从 manifest.json 读字段（标准库 json，目标机唯一保证存在的解析器）
+# 注意：dict 必须用下标访问（d["model"]["package"]），不能点号访问。
 manifest_get() {
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8"))["model"]; print(d'$1')' "${MANIFEST}"
+  python3 -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))["model"]
+v = d
+for key in sys.argv[2].lstrip(".").split("."):
+    v = v[key]
+print(v)' "${MANIFEST}" "$1"
 }
 
 installed_version() {
@@ -57,6 +78,7 @@ installed_version() {
 
 do_install() {
   require_env_file
+  require_tools
   load_env
 
   local force=0
@@ -83,10 +105,17 @@ do_install() {
   fi
 
   info "安装 ${pkg}==${version} 到 ${venv} ..."
+  # spaCy 模型包不发 PyPI：官方分发是 GitHub Releases 的 wheel。
+  # 目标机 GitHub 不可达时，可把 PIP_INDEX_URL 换成镜像源（如清华 TUNA
+  # https://pypi.tuna.tsinghua.edu.cn/simple —— 其 spacy 模型走 pypi 直链，
+  # 但 en_core_web_lg 需在 env 里改 MODEL_WHEEL_URL 指向可达镜像）。
+  local import_name wheel_url
+  import_name="$(manifest_get .import_name)"
+  wheel_url="${MODEL_WHEEL_URL:-https://github.com/explosion/spacy-models/releases/download/${import_name}-${version}/${import_name}-${version}-py3-none-any.whl}"
   if [[ -n "${PIP_INDEX_URL:-}" ]]; then
-    "$(venv_python)" -m pip install --index-url "${PIP_INDEX_URL}" "${pkg}==${version}"
+    uv pip install --python "${venv}" --index-url "${PIP_INDEX_URL}" "${wheel_url}"
   else
-    "$(venv_python)" -m pip install "${pkg}==${version}"
+    uv pip install --python "${venv}" "${wheel_url}"
   fi
 
   # 安装成功 ≠ 可用：必须能 load 才算数
@@ -113,8 +142,9 @@ try:
     import spacy
     model = sys.argv[1]
     nlp = spacy.load(model)
-    # 模型包按惯例带 version 属性；拿不到就算加载失败
-    print(__import__(model).version)
+    # 模型包按惯例暴露 __version__（不是 version —— 踩过：
+    # 访问 .version 会 AttributeError，被误判成加载失败）
+    print(__import__(model).__version__)
     # 走一次真实解析，确认管线可用而不只是可 import
     doc = nlp("The quick brown fox jumps over the lazy dog.")
     assert len(doc) > 0

@@ -43,9 +43,9 @@ class SentenceEmbedder(EmbedderPort):
         model_name: str = DEFAULT_MODEL_NAME,
         local_dir: str | Path | None = None,
     ) -> None:
-        # 依赖检查在构造时完成（模型加载仍惰性）：容器装配时本地未装
-        # sentence-transformers 会立即抛 DependencyNotInstalledError，
-        # L3 检测器随之被跳过（与 Presidio 同款"跳过是可见的"纪律）。
+        # 依赖检查在构造时完成：容器装配时本地未装 sentence-transformers
+        # 会立即抛 DependencyNotInstalledError，L3 检测器随之被跳过
+        # （与 Presidio 同款"跳过是可见的"纪律）。
         try:
             import sentence_transformers  # noqa: F401, PLC0415
         except ImportError as exc:
@@ -55,7 +55,13 @@ class SentenceEmbedder(EmbedderPort):
             ) from exc
         self._model_name = model_name
         self._local_dir = _resolve_local_dir(local_dir)
-        self._model = None  # 惰性：模型 ~400MiB，首次请求才加载
+        # 模型在**构造期**加载，不是惰性：L3 检测器的 detect 有 5s 墙钟
+        # （run_detector_with_timeout），而 bge-base 首次加载要读 ~400MiB
+        # 权重（CPU 上 2-4s）——惰性加载会让**第一次** detect 必超时。
+        # 构造发生在容器装配时（build_container），不受检测墙钟约束；
+        # 代价是启动慢几秒，换来每次 detect 都只做推理（~1s 内）。
+        self._model = None  # _load 的哨兵：先占位再预热
+        self._model = self._load()
 
     @property
     def name(self) -> str:

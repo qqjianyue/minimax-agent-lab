@@ -53,8 +53,14 @@ require_tools() {
 
 # 从 manifest.json 读字段：$1 = json 路径（如 .model.repo）
 # 用 python3 是因为标准库 json 是目标机唯一保证存在的解析器。
+# 注意：dict 必须用下标访问（d["model"]["repo"]），不能点号访问。
 manifest_get() {
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(d'$1')' "${MANIFEST}"
+  python3 -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+v = d
+for key in sys.argv[2].lstrip(".").split("."):
+    v = v[key]
+print(v)' "${MANIFEST}" "$1"
 }
 
 # 逐行输出 manifest 中的文件清单（列表字段专用）
@@ -199,6 +205,8 @@ PY
 }
 
 do_status() {
+  require_env_file
+  load_env
   if [[ ! -f "${LOCK}" ]]; then
     info "未安装（无 manifest.lock.json）。执行 ./setup.sh install"
     return 0

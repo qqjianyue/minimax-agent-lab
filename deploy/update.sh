@@ -96,20 +96,35 @@ main() {
     --exclude '.coverage' --exclude '.env' --exclude '.release-env' \
     "${SOURCE_REPO}/" "${rel}/"
   export_release_env "$NEW_RELEASE" "$rel"
+  # 组件运行时变量（如 D1 的 MODELS_HOME）同步进 shared/.env：服务进程的
+  # EnvironmentFile 之一，缺了它 SentenceEmbedder 会回退到 HF 联网加载。
+  sync_component_env "$rel"
   ok "已暂存 ${NEW_RELEASE}"
 
   # --- 3. VENV --------------------------------------------------------
-  step 3 7 "依赖环境"
+  step 3 8 "依赖环境"
   ensure_venv "$rel"
 
-  # --- 4. PRE-TESTS（切换前，离线）------------------------------------
-  step 4 7 "离线闸门（L0 + L1）"
+  # --- 4. ML 模型资产（D1/D2，切换前）---------------------------------
+  # ensure_venv 的 `uv sync` 会把**不在 uv.lock 里的包**从 venv 移除 ——
+  # spacy 模型（en_core_web_lg）按 D2 设计不进 lock（模型与代码独立版本、
+  # 由 infra/spacy 单独管理），所以**每次部署后必须重装**，否则 L0/L1 里
+  # presidio 检测器会因模型缺失而尝试联网下载（离线闸门下直接失败）。
+  # models 不在 venv 里（shared/models），uv sync 不影响它，但同样在这里
+  # 做一次完整性校验 —— 模型坏掉时在切换前就暴露，而不是上线后才发现。
+  # 两个脚本幂等：已装且版本一致时秒级跳过。
+  step 4 8 "ML 模型资产（D1 嵌入模型 / D2 spacy）"
+  bash "${rel}/infra/spacy/setup.sh" install
+  bash "${rel}/infra/models/setup.sh" verify
+
+  # --- 5. PRE-TESTS（切换前，离线）------------------------------------
+  step 5 8 "离线闸门（L0 + L1）"
   run_layer "$rel" unit
   run_layer "$rel" integration
   ok "离线闸门通过"
 
-  # --- 5. SWITCH ------------------------------------------------------
-  step 5 7 "切换版本并重启"
+  # --- 6. SWITCH ------------------------------------------------------
+  step 6 8 "切换版本并重启"
   # unit 必须跟着 release 一起刷新。模板里的 Environment= 是版本相关资产：
   # 不重渲染就跑的还是目标机上那份旧 unit，新配置静默失效、服务却照常健康
   # （例如 B4 的 MINIMAX_AGENT_AUDIT__ROOT 缺失 → 账本写进 release 目录）。
@@ -124,7 +139,7 @@ main() {
   fi
   ok "新版本已上线"
 
-  # --- 6/7. L2 + L3 ---------------------------------------------------
+  # --- 7/8. L2 + L3 ---------------------------------------------------
   # 私密配置没就位时，L2/L3 根本无法执行（没有 API Key）。这时**不静默跳过**：
   # 明确警告并把状态记为"未经在线验证"，而不是记成 success ——
   # 一次"全绿"但实际没验证过功能的部署，比一次失败更危险。
@@ -138,13 +153,13 @@ main() {
   fi
 
   # 两者都打真实模型，输出不确定，所以走带重试的版本（见 common.sh 的说明）
-  step 6 7 "L2 冒烟测试"
+  step 7 8 "L2 冒烟测试"
   if ! run_online_layer_with_retry "$rel" smoke "$NEW_RELEASE"; then
     do_rollback "L2 冒烟测试失败（已重试）"
     exit 1
   fi
 
-  step 7 7 "L3 功能测试"
+  step 8 8 "L3 功能测试"
   if ! run_online_layer_with_retry "$rel" functional "$NEW_RELEASE"; then
     do_rollback "L3 功能测试失败（已重试）"
     exit 1
