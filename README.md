@@ -460,7 +460,7 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
 | B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ **目标机 v0.1.6 实跑验证** |
-| B6 | C7 `orchestrator` | ✅ 本地全绿；v0.1.8 部署 L2 通过、L3 因 FT-01 presidio 中文误报失败已修正，重发 v0.1.9 |
+| B6 | C7 `orchestrator` | ✅ **目标机 v0.1.9 实跑验证**；L2 冒烟账本断言放宽（编排下工具循环产生 TOOL 记录，`>=2`）→ v0.1.10 |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
@@ -491,6 +491,11 @@ L0+L1 合并覆盖率保持 **94%** 以上（门槛 89.9）。
   OpenAI/MiniMax 协议要求**后续 `role=tool` 结果必须能在 assistant 消息的
   `tool_calls` 声明里找到匹配 id**。修复：`LLMMessage` 增加 `tool_calls` 字段、
   `build_payload` 序列化输出、`llm_plan_node` 落盘声明（v0.1.8 待部署验证）。
+- **L2 账本断言适配（v0.1.10）**：`test_chat_appends_input_and_output_records`
+  原断言"一次对话恰好 2 条审计记录"（input+output）；B6 编排下模型触发工具
+  循环时还会写 TOOL 阶段 guard 记录（0.1.9 部署 L2 第 1 次即因此失败，靠
+  重试通过）。改为"**至少 2 条且必含 input/output 阶段**"——工具循环是编排
+  的合法行为，不该被判成账本异常。
 
 ### B5 变更要点（v0.1.6）
 

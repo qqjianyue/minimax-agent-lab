@@ -124,8 +124,15 @@ class TestLedgerWrites:
         assert body["llm_called"] is True
 
         new = _new_records(ledger_snapshot)
-        assert len(new) == 2, f"一次正常对话应写两条记录，实际 {len(new)} 条"
-        assert [r["stage"] for r in new] == ["input", "output"]
+        # B6 起 /chat 走编排（input_guard → llm → 工具循环 → output_guard）：
+        # 一次对话**至少**两条记录（input + output），若模型触发工具调用还会
+        # 额外产生 TOOL 阶段 guard 记录 —— 断言的是"必有 input 与 output"，
+        # 而不是"恰好两条"。写死 ==2 会把合法的工具循环判成账本异常
+        # （0.1.9 部署时 L2 冒烟第 1 次即因此失败，靠重试侥幸通过）。
+        assert len(new) >= 2, f"一次正常对话至少应写两条记录（input+output），实际 {len(new)} 条"
+        assert {"input", "output"} <= {r["stage"] for r in new}, (
+            f"新增记录应含 input 与 output 阶段，实际 {sorted(r['stage'] for r in new)}"
+        )
 
     def test_input_and_output_share_one_request_id(
         self, http: httpx.Client, ledger_snapshot: list[dict]
