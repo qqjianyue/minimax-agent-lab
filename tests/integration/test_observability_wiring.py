@@ -215,8 +215,9 @@ class TestAuditFailureIsolation:
             def record(self, *_args, **_kwargs):
                 raise OSError("disk full")
 
-        client, _, container = make_client(tmp_path)
-        client.app.state.container = replace(container, ledger=ExplodingLedger())
+        # 装配期注入（B6 编排图在 build_container 时固定依赖 —— 事后
+        # replace 容器字段不会同步进图内的 GuardRunner）
+        client, _, container = make_client(tmp_path, ledger=ExplodingLedger())
 
         with caplog.at_level("WARNING"):
             response = client.post("/chat", json={"message": "介绍一下定期存款"})

@@ -364,6 +364,9 @@ class StubDetector:
     name: str = "stub"
     version: str = "1.0.0"
     supported_stages: frozenset[GuardStage] = frozenset(GuardStage)
+    #: 命中生效的阶段。默认全部（兼容历史测试）；编排测试需要 stage 感知
+    #: 时显式传入（如只让 OUTPUT 命中、INPUT 不命中）。
+    stages: frozenset[GuardStage] = frozenset(GuardStage)
     labels: frozenset[str] = frozenset()
     results: tuple[DetectorResult, ...] | None = None
     raises: BaseException | None = None
@@ -372,6 +375,8 @@ class StubDetector:
 
     def detect(self, text: str, *, stage: GuardStage) -> tuple[DetectorResult, ...]:
         self.calls.append((text, stage))
+        if stage not in self.stages:
+            return ()
         if self.raises is not None:
             raise self.raises
         if self.results is None:

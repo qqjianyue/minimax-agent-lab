@@ -13,6 +13,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from agent_core.clock import SystemClock
 from agent_core.config import Settings, load_settings
@@ -33,6 +34,7 @@ from detector_rules.redactor import RegexRedactor
 from guard_contract.default_policy import load_default_policy, load_policy_set
 from guard_contract.policy_schema import GuardSettings, PolicySet
 from llm_minimax.client import MinimaxLLM
+from orchestrator import build_orchestrator_graph
 from policy_engine.engine import PolicyEngine
 from policy_engine.pipeline import GuardPipeline
 from policy_engine.redactor import Redactor
@@ -67,6 +69,10 @@ class AppContainer:
     tool_executor: ToolExecutor
 
     system_prompt: str = SYSTEM_PROMPT
+
+    #: B6 C7 编排图（LangGraph StateGraph）。懒装配由 build_container 完成；
+    #: 测试可直接构造该字段为 None 的容器并单独装配编排。
+    orchestrator: Any | None = None
 
     #: C8 审计账本。刻意**可为空** —— 审计关闭时不该让整个服务起不来，
     #: 但默认配置是开启的（银行场景需要留痕）。
@@ -133,6 +139,7 @@ def build_container(
     telemetry: TelemetryPort | None = None,
     audit_root: str | Path | None = None,
     with_ml_detectors: bool = True,
+    ledger: AuditLedger | None = None,
 ) -> AppContainer:
     """组装容器。测试时注入任何一项即可覆盖默认实现。"""
     resolved_settings = (
@@ -188,8 +195,8 @@ def build_container(
     )
 
     # --- C8 审计账本 ---
-    resolved_ledger: AuditLedger | None = None
-    if resolved_settings.audit.enabled:
+    resolved_ledger: AuditLedger | None = ledger
+    if resolved_ledger is None and resolved_settings.audit.enabled:
         # 路径解析顺序：显式参数（测试/部署注入）> 配置 audit.root > 当前工作目录。
         # 生产部署必须命中前两者之一 —— 落在 cwd 意味着写进 release 目录，
         # 版本更新/回退/清理都会让审计历史丢失（见 config.AuditSettings.root 说明）。
@@ -213,6 +220,20 @@ def build_container(
     resolved_tools = ToolRegistry(build_bank_tools())
     tool_executor = ToolExecutor(resolved_tools)
 
+    # --- B6 C7 编排图（LangGraph）：guard → plan → tool_loop → guard ---
+    resolved_orchestrator = build_orchestrator_graph(
+        pipeline=pipeline,
+        llm=resolved_llm,
+        tools=resolved_tools,
+        tool_executor=tool_executor,
+        redactor=resolved_redactor,
+        ledger=resolved_ledger,
+        instrumentation=instrumentation,
+        system_prompt=system_prompt or SYSTEM_PROMPT,
+        model=resolved_settings.llm.model,
+        max_steps=resolved_settings.app.max_steps,
+    )
+
     return AppContainer(
         settings=resolved_settings,
         guard_settings=resolved_guard,
@@ -227,6 +248,7 @@ def build_container(
         instrumentation=instrumentation,
         tools=resolved_tools,
         tool_executor=tool_executor,
+        orchestrator=resolved_orchestrator,
     )
 
 

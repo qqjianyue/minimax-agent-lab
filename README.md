@@ -459,14 +459,32 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | B3 | C10 `agent_service` + `llm_minimax` + 部署脚本 | ✅ **目标机已实跑验证** |
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
-| B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ 本地全绿，部署中 |
-| B6 | C7 `orchestrator` | 待开始 |
+| B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ **目标机 v0.1.6 实跑验证** |
+| B6 | C7 `orchestrator` | ✅ 本地全绿，待目标机部署 |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
-测试规模：L0 **567**（+50：B5 新增 C5/C6 用例；含 5 项 skip：3 项 POSIX 权限位在 Windows 上跳过、2 项需 bash）+ L1 **134** = **701**（本地离线，全绿）；
-L2 冒烟 **25** + L3 功能 **32** = **57**（目标机执行：FT-07/08 已随 B5 解锁，FT-09/FT-11 仍显式 skip）。
-L0+L1 合并覆盖率 **94%**（B5 新包拉低 1 个百分点，仍高于 89.9 门槛）。
+测试规模：L0 **577**（+10：B6 新增 orchestrator 全分支用例）+ L1 **139**（+5：/chat 编排端到端）= **716**（本地离线，全绿）；
+L2 冒烟 **25** + L3 功能 **34**（FT-13/14 随 B6 解锁）= **59**（目标机执行：FT-09 需 B8、FT-11 需 D4，仍显式 skip）。
+L0+L1 合并覆盖率保持 **94%** 以上（门槛 89.9）。
+
+### B6 变更要点（v0.1.7）
+
+- **C7 `orchestrator`（LangGraph StateGraph）**：`/chat` 中间段替换为状态图
+  `input_guard → llm_plan（带工具声明）→ tool_loop（TOOL guard + executor +
+  结果回填）→ output_guard → 响应`；`retrieve` 节点为 B8 RAG 占位（B6 不接
+  检索路径，FT-09 保持 skip）。
+- **多轮工具循环**：模型返回 `tool_calls` → 逐个过 TOOL guard（guard 非 ALLOW
+  即不执行）→ 执行 → 以 `role=tool` + `tool_call_id` 回填 → 再规划；
+  `max_steps`（`settings.app.max_steps`，默认 10）硬兜底，不无限烧额度。
+- **HITL 语义**：requires_approval / 被拦工具 → `interrupted=True` +
+  `requires_human=True`；完整"暂停-恢复"（LangGraph interrupt + checkpointer
+  持久化）留 B7+。
+- **LLM 埋点不丢失**：编排内每次模型调用仍走 `llm_call` span（token/成本口径，
+  FT-11 的载体）；guard 检测点继续写审计 + guard span。
+- **响应契约扩展**：`ChatResponse` 新增 `tools_called`（执行的工具清单）/
+  `steps`（规划轮数）/ `interrupted`（HITL 标记）；usage 为多轮累计。
+- **L3 解锁**：FT-13（编排响应结构）、FT-14（编排输入拦截：block 后不进模型/工具）。
 
 ### B5 变更要点（v0.1.6）
 

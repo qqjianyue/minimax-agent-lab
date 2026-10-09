@@ -341,7 +341,7 @@ pytest -m "" -q
 
 ---
 
-> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。B4（C8 `audit_ledger` + C9 `telemetry`）**已完成并在目标机实跑验证**。B5（C5 `detector_ml` + C6 `agent_tools`）**本地已完成**（L0 567 / L1 134 全绿，合并覆盖率 94%），目标机部署进行中 —— 依赖策略按决策 D7 走 `ml` extras（本地不装 torch/presidio/spacy，目标机 `ensure_venv --extra ml` 装全量）；L3 的 FT-07/08 已随 C6 解锁走真实 `/tools/execute` 路径。部署根 `/data/workspace/minimax-agent`，版本 **0.1.6**。下一批为 **B6**（C7 `orchestrator`：多轮 + 工具循环编排，复用 C6 工具层）。
+> **实施进度**：B1–B3 **全部完成并在目标机实跑验证**。B4（C8 `audit_ledger` + C9 `telemetry`）**已完成并在目标机实跑验证**。B5（C5 `detector_ml` + C6 `agent_tools`）**已在目标机 v0.1.6 实跑验证**（两次全流程部署成功；6 项部署排障修复已提交 `546858c`）。B6（C7 `orchestrator`：LangGraph 多轮 + 工具循环编排，复用 C6 工具层）**本地已完成**（L0 577 / L1 139 全绿，合并覆盖率 94%+，langgraph 依赖 `>=1.2.14`），待目标机部署 **v0.1.7**。L3 的 FT-13/14 已随 B6 解锁；FT-09 需 B8 RAG、FT-11 需 D4 Phoenix，仍显式 skip。下一批为 **B7**（C11 `eval_harness`）。
 >
 > **B2 期间修正的设计问题**（已被回归测试锁定）：
 > 1. `min_score=0.0` 的兜底放行规则会让**任何**检测结果都命中规则，导致 fail_mode 永远走不到 —— 已在 `PolicySet._reject_trivial_catch_all` 加载时拒绝，兜底改用 `default_action`。

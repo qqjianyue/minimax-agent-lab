@@ -26,6 +26,7 @@ dependencies = [
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
     "jsonschema>=4.23",
+    "langgraph>=1.2.14",
 ]
 
 # B5：ML 检测器（C5）的重依赖，只在目标机 venv 安装（--extra ml）。
@@ -52,6 +53,10 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
 
 [tool.hatch.build.targets.wheel]
 packages = [

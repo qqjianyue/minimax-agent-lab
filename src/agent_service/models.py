@@ -109,6 +109,19 @@ class GuardInspectResponse(BaseModel):
     audit: dict[str, Any]
 
 
+class ToolCallResult(BaseModel):
+    """编排执行过的工具调用（C7，进 /chat 响应）。
+
+    与 ``/tools/execute`` 的 ``ToolExecuteResponse`` 互补：后者是单次
+    调用的完整契约（含 guard 决策），这里是编排一轮对话里实际执行过的
+    工具清单（轻量摘要，不含决策明细 —— 明细进审计账本）。
+    """
+
+    name: str
+    status: str
+    output: str
+
+
 class ChatResponse(BaseModel):
     request_id: str
     #: 实际交给用户的文本（已按动作处理）
@@ -122,6 +135,12 @@ class ChatResponse(BaseModel):
     redacted: bool
     usage: dict[str, int] = Field(default_factory=dict)
     llm_called: bool
+    #: B6 C7：编排实际执行过的工具（按执行顺序）
+    tools_called: list[ToolCallResult] = Field(default_factory=list)
+    #: B6 C7：LLM 调用轮数（max_steps 兜底口径）
+    steps: int = 0
+    #: B6 C7：是否出现需人工审批/被拦的工具调用（HITL 语义）
+    interrupted: bool = False
 
 
 class ToolExecuteResponse(BaseModel):
@@ -145,6 +164,7 @@ __all__ = [
     "GuardInspectRequest",
     "GuardInspectResponse",
     "HealthResponse",
+    "ToolCallResult",
     "ToolExecuteRequest",
     "ToolExecuteResponse",
     "VersionModel",

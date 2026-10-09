@@ -47,7 +47,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from agent_core.errors import ConfigurationError, LLMError
-from agent_core.ports import LLMMessage, LLMRequest, TokenUsage
+from agent_core.ports import TokenUsage
 from agent_service.container import AppContainer
 from agent_service.models import (
     ChatRequest,
@@ -56,12 +56,12 @@ from agent_service.models import (
     GuardInspectRequest,
     GuardInspectResponse,
     HealthResponse,
+    ToolCallResult,
     ToolExecuteRequest,
     ToolExecuteResponse,
     VersionModel,
 )
 from guard_contract.enums import GuardStage, PolicyAction
-from policy_engine.actions import apply_action
 from policy_engine.decision import Decision
 
 logger = logging.getLogger("agent_service")
@@ -387,83 +387,67 @@ def _run_guarded(
 
 
 def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
-    """单轮对话：输入检测 → 生成 → 输出检测。
+    """对话入口（B6 C7 编排版）。
 
-    B6 之前不含工具调用与多轮记忆，但检测点位置与最终动作合成逻辑已就位，
-    届时只需把中间段替换为 LangGraph 节点，判定语义不变。
+    由 LangGraph 编排图驱动：输入检测 → 规划（带工具声明）→ 工具循环
+    （TOOL guard + executor + 结果回填）→ 输出检测。检测点位置与最终
+    动作合成语义与 B3 单轮版一致；工具审批/拦截标记 ``interrupted``。
     """
     # 整次对话共用一个 request_id：它是 trace 与审计账本的关联键，
     # 在最外层生成一次，下游检测点直接复用。
     request_id = f"req-{uuid4().hex[:12]}"
 
     with _trace_span(
-        container, request_id, **{"chat.has_tools": False}
+        container, request_id, **{"chat.has_tools": True}
     ):
-        # --- 1. 输入检测（环绕拦截）---
-        input_decision, _ = _run_guarded(
-            container,
-            span_name="input_guard",
-            stage=GuardStage.INPUT,
-            text=payload.message,
-            request_id=request_id,
-            metadata={"endpoint": "/chat"},
-        )
-        input_outcome = apply_action(
-            input_decision.action, payload.message, redactor=container.redactor
-        )
-
-        # 被拦下或需人工时，不调用模型 —— 省额度，也避免危险内容进入模型上下文
-        if input_decision.action is PolicyAction.BLOCK or input_decision.requires_human:
-            return ChatResponse(
-                request_id=input_decision.request_id,
-                response=input_outcome.text,
-                action=input_decision.action,
-                input_guard=DecisionModel.from_decision(input_decision),
-                output_guard=None,
-                requires_human=input_decision.requires_human,
-                redacted=input_outcome.changed,
-                llm_called=False,
-            )
-
-        # --- 2. 生成（外部资产；遥测在调用侧闭环）---
-        llm_request = LLMRequest(
-            model=container.settings.llm.model,
-            messages=(
-                LLMMessage(role="system", content=container.system_prompt),
-                LLMMessage(role="user", content=input_outcome.text),
-            ),
-            temperature=1.0,
-        )
-        with _llm_span(container, container.settings.llm.model) as call:
-            completion = container.llm.complete(llm_request)
-            call.record(completion)
-
-        # --- 3. 输出检测（必须发生在返回用户之前，此位置不可后移）---
-        output_decision, _ = _run_guarded(
-            container,
-            span_name="output_guard",
-            stage=GuardStage.OUTPUT,
-            text=completion.content,
-            request_id=request_id,
-            metadata={"endpoint": "/chat"},
-        )
-        output_outcome = apply_action(
-            output_decision.action, completion.content, redactor=container.redactor
+        result = container.orchestrator.invoke(
+            {
+                "request_id": request_id,
+                "user_message": payload.message,
+                "messages": [],
+                "tools_called": [],
+                "steps": 0,
+                "pending_tool_calls": [],
+                "interrupted": False,
+                "blocked": False,
+                "redacted": False,
+            }
         )
 
-        return ChatResponse(
-            request_id=input_decision.request_id,
-            response=output_outcome.text,
-            action=stricter(input_decision.action, output_decision.action),
-            input_guard=DecisionModel.from_decision(input_decision),
-            output_guard=DecisionModel.from_decision(output_decision),
-            requires_human=(
-                input_decision.requires_human or output_decision.requires_human
-            ),
-            redacted=input_outcome.changed or output_outcome.changed,
-            usage=_usage_dict(completion.usage),
-            llm_called=True,
-        )
+    input_decision = result["input_decision"]
+    output_decision = result.get("output_decision")
+    tools_called = result.get("tools_called", [])
+    interrupted = bool(result.get("interrupted", False))
+    steps = result.get("steps", 0)
+    total_usage = result.get("total_usage")
+
+    return ChatResponse(
+        request_id=input_decision.request_id,
+        response=result.get("response", ""),
+        action=(
+            stricter(input_decision.action, output_decision.action)
+            if output_decision is not None
+            else input_decision.action
+        ),
+        input_guard=DecisionModel.from_decision(input_decision),
+        output_guard=(
+            DecisionModel.from_decision(output_decision) if output_decision is not None else None
+        ),
+        requires_human=(
+            input_decision.requires_human
+            or bool(output_decision is not None and output_decision.requires_human)
+            or interrupted
+        ),
+        redacted=bool(result.get("redacted", False)),
+        usage=_usage_dict(total_usage) if total_usage is not None else {},
+        llm_called=steps > 0,
+        tools_called=[
+            ToolCallResult(name=tc["name"], status=tc["status"], output=tc["output"])
+            for tc in tools_called
+        ],
+        steps=steps,
+        interrupted=interrupted,
+    )
 
 
 def _usage_dict(usage: TokenUsage) -> dict[str, int]:
