@@ -148,6 +148,15 @@ class TestToolLoop:
         assert len(tool_msgs) == 1
         assert tool_msgs[0].tool_call_id == "c1"
         assert "1.85%" in tool_msgs[0].content
+        # 协议断言（防 400 "tool id not found" 回归）：第二轮请求的
+        # assistant 消息必须携带 tool_calls 声明，与 tool 结果匹配
+        assert len(llm.calls) == 2
+        second = llm.calls[1]
+        assistant_msgs = [m for m in second.messages if m.role == "assistant"]
+        assert assistant_msgs and assistant_msgs[-1].tool_calls
+        assert assistant_msgs[-1].tool_calls[0].id == "c1"
+        tool_msgs_in_req = [m for m in second.messages if m.role == "tool"]
+        assert tool_msgs_in_req and tool_msgs_in_req[-1].tool_call_id == "c1"
 
     def test_max_steps_forces_finalize(self) -> None:
         # 模型每一轮都坚持调工具 → 轮数封顶后必须收尾，不能无限循环

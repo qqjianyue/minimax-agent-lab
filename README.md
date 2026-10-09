@@ -460,7 +460,7 @@ FT-01（"用两句话介绍你们的定期存款产品"，最基础的正常查�
 | 部署增强 | `mask-config.yaml` / `config.yaml` 下发 + YAML 配置源 | ✅ |
 | B4 | C8 `audit_ledger` + C9 `telemetry` | ✅ **目标机已实跑验证** |
 | B5 | C5 `detector_ml` + C6 `agent_tools` | ✅ **目标机 v0.1.6 实跑验证** |
-| B6 | C7 `orchestrator` | ✅ 本地全绿，待目标机部署 |
+| B6 | C7 `orchestrator` | ✅ 本地全绿，待目标机部署（v0.1.7 部署失败已定位：工具协议 400，修复待部署 v0.1.8） |
 | B7 | C11 `eval_harness` | 待开始 |
 | B8 | RAG 检索组件（间接注入） | 待开始（决策 Q4：进 v1，优先级最低） |
 
@@ -485,6 +485,12 @@ L0+L1 合并覆盖率保持 **94%** 以上（门槛 89.9）。
 - **响应契约扩展**：`ChatResponse` 新增 `tools_called`（执行的工具清单）/
   `steps`（规划轮数）/ `interrupted`（HITL 标记）；usage 为多轮累计。
 - **L3 解锁**：FT-13（编排响应结构）、FT-14（编排输入拦截：block 后不进模型/工具）。
+- **部署排障（v0.1.7 失败，已定位根因）**：工具循环对 MiniMax 返回
+  `400 invalid params, tool result's tool id(call_...) not found (2013)` ——
+  B6 编排最初只把 `tool_calls` 放状态队列、assistant 消息不携带声明，而
+  OpenAI/MiniMax 协议要求**后续 `role=tool` 结果必须能在 assistant 消息的
+  `tool_calls` 声明里找到匹配 id**。修复：`LLMMessage` 增加 `tool_calls` 字段、
+  `build_payload` 序列化输出、`llm_plan_node` 落盘声明（v0.1.8 待部署验证）。
 
 ### B5 变更要点（v0.1.6）
 

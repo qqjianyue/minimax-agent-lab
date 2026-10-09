@@ -182,6 +182,20 @@ def build_payload(request: LLMRequest) -> dict[str, Any]:
             item["name"] = message.name
         if message.tool_call_id:
             item["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            # assistant 的工具调用声明必须随消息下发，否则后续
+            # role=tool 结果会因 tool_call_id 找不到匹配而被 API 拒绝
+            item["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                    },
+                }
+                for call in message.tool_calls
+            ]
         messages.append(item)
 
     payload: dict[str, Any] = {

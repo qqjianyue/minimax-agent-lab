@@ -146,7 +146,13 @@ def llm_plan_node(
     )
     completion = llm_complete(request)
     messages.append(
-        LLMMessage(role=LLMMessage.ROLE_ASSISTANT, content=completion.content)
+        LLMMessage(
+            role=LLMMessage.ROLE_ASSISTANT,
+            content=completion.content,
+            # 工具声明随 assistant 消息落盘：MiniMax 协议要求后续
+            # role=tool 结果能找到匹配的 tool_call_id，否则 400
+            tool_calls=tuple(getattr(completion, "tool_calls", ())),
+        )
     )
 
     next_state["messages"] = messages

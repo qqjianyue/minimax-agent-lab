@@ -22,7 +22,7 @@ from agent_core.errors import (
     LLMTimeoutError,
     TransientError,
 )
-from agent_core.ports import LLMMessage, LLMRequest, TokenUsage, ToolSpec
+from agent_core.ports import LLMMessage, LLMRequest, TokenUsage, ToolCall, ToolSpec
 from llm_minimax import MinimaxLLM, build_payload, map_http_error, parse_response
 
 TEST_KEY = "sk-test-key-not-real-0000"
@@ -128,6 +128,35 @@ class TestBuildPayload:
         )
         assert payload["messages"][0]["name"] == "bot"
         assert payload["messages"][1]["tool_call_id"] == "c1"
+
+    def test_assistant_tool_calls_serialized(self) -> None:
+        """协议回归：assistant 必须携带 tool_calls 声明，否则工具循环被 API 400。"""
+        payload = build_payload(
+            simple_request(
+                messages=(
+                    LLMMessage(
+                        role="assistant",
+                        content="查一下",
+                        tool_calls=(ToolCall(id="c1", name="search", arguments={"q": "abc"}),),
+                    ),
+                    LLMMessage(role="tool", content="结果", tool_call_id="c1"),
+                )
+            )
+        )
+        assert payload["messages"][0]["tool_calls"] == [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"q": "abc"}'},
+            }
+        ]
+        assert payload["messages"][1]["tool_call_id"] == "c1"
+
+    def test_assistant_without_tool_calls_no_key(self) -> None:
+        payload = build_payload(
+            simple_request(messages=(LLMMessage(role="assistant", content="x"),))
+        )
+        assert "tool_calls" not in payload["messages"][0]
 
     def test_temperature_passthrough(self) -> None:
         assert build_payload(simple_request(temperature=0.2))["temperature"] == 0.2

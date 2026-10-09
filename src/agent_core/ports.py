@@ -66,6 +66,10 @@ class LLMMessage:
     content: str
     name: str | None = None
     tool_call_id: str | None = None
+    #: assistant 消息的工具调用声明（OpenAI/MiniMax 兼容协议要求：
+    #: 后续 ``role=tool`` 结果消息必须能在此找到匹配的 tool_call_id，
+    #: 否则 API 拒绝请求 —— 400 "tool result's tool id not found"）
+    tool_calls: tuple[ToolCall, ...] = ()
 
     ROLE_SYSTEM = "system"
     ROLE_USER = "user"
@@ -75,6 +79,8 @@ class LLMMessage:
     def __post_init__(self) -> None:
         if self.role not in {self.ROLE_SYSTEM, self.ROLE_USER, self.ROLE_ASSISTANT, self.ROLE_TOOL}:
             raise ValueError(f"未知 role: {self.role!r}")
+        if self.tool_calls and self.role != self.ROLE_ASSISTANT:
+            raise ValueError("tool_calls 只允许出现在 assistant 消息上")
 
 
 @dataclass(frozen=True, slots=True)
