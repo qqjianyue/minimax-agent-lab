@@ -96,8 +96,11 @@ main() {
     --exclude '.coverage' --exclude '.env' --exclude '.release-env' \
     "${SOURCE_REPO}/" "${rel}/"
   export_release_env "$NEW_RELEASE" "$rel"
-  # 组件运行时变量（如 D1 的 MODELS_HOME）同步进 shared/.env：服务进程的
-  # EnvironmentFile 之一，缺了它 SentenceEmbedder 会回退到 HF 联网加载。
+  # 组件 env 先生成（模板 + 环境总配置定制），sync_component_env 才能读到
+  # 最新的 MODELS_HOME 等运行时键 —— 生成与同步都必须在暂存阶段完成，
+  # 切换前任何一步失败都不会触碰 current。
+  ensure_component_env "$rel" spacy
+  ensure_component_env "$rel" models
   sync_component_env "$rel"
   ok "已暂存 ${NEW_RELEASE}"
 
@@ -114,9 +117,7 @@ main() {
   # 做一次完整性校验 —— 模型坏掉时在切换前就暴露，而不是上线后才发现。
   # 两个脚本幂等：已装且版本一致时秒级跳过。
   step 4 8 "ML 模型资产（D1 嵌入模型 / D2 spacy）"
-  # env 不进 git：部署时按实际环境从 env.template 生成（幂等，已存在则跳过）
-  ensure_component_env "$rel" spacy
-  ensure_component_env "$rel" models
+  # 组件 env 已在 step 2 生成（含环境总配置定制）；setup.sh 幂等
   bash "${rel}/infra/spacy/setup.sh" install
   bash "${rel}/infra/models/setup.sh" verify
 

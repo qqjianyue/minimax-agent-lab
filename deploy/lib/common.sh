@@ -370,12 +370,23 @@ sync_component_env() {
 #:
 #: 设计：env.template 入库、env 不进 git（机器本地配置）。此前 env 缺失会让
 #: 部署在 step 4 中止（"缺少配置文件"），需手工 cp+改；现在部署时自动生成。
-#: 已在目标机存在的手工 env 不被覆盖（保留机器特定覆盖）。
+#: 已存在的手工 env 不被覆盖（保留机器特定覆盖）。
 #:
-#: spacy 额外逻辑：若持久 wheel 目录（${AGENT_HOME%/*}/tmp，如
-#: /data/workspace/tmp）下存在本地 wheel，自动写入 MODEL_WHEEL_URL 指向
-#: file:// 本地路径 —— 目标机 GitHub 不可达时免联网，且 wheel 放持久目录
-#: （/tmp 会在重启时被系统清空，已踩过）。
+#: 定制来源（优先级从高到低）：
+#:   1. 环境总配置 ${AGENT_HOME}/config.yaml（可选）—— `components.<name>.<key>`
+#:      显式覆写生成的 env。这是**唯一**的机器定制入口，禁止手工改 env。
+#:   2. spacy 专用自动注入：若持久 wheel 目录（${AGENT_HOME%/*}/tmp，如
+#:      /data/workspace/tmp）下存在本地 wheel，且总配置未显式设置
+#:      MODEL_WHEEL_URL，自动写入 file:// 本地路径 —— 目标机 GitHub 不可达
+#:      时免联网，且 wheel 放持久目录（/tmp 会在重启时被系统清空，已踩过）。
+#:   3. env.template 默认值（AGENT_HOME/MODELS_HOME 按部署根修正）。
+#:
+#: 环境总配置示例（/data/workspace/minimax-agent/config.yaml）：
+#:   components:
+#:     spacy:
+#:       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+#:     models:
+#:       HF_ENDPOINT: https://hf-mirror.com
 ensure_component_env() {
   local rel="$1" name="$2"
   local dir="${rel}/infra/${name}"
@@ -389,17 +400,67 @@ ensure_component_env() {
   cp "$tmpl" "$env"
   if [[ "$name" == "spacy" ]]; then
     sed -i "s|^AGENT_HOME=.*|AGENT_HOME=${AGENT_HOME}|" "$env"
-    local wheel
-    wheel="$(ls "${AGENT_HOME%/*}/tmp"/en_core_web_lg-*.whl 2>/dev/null | head -1 || true)"
-    if [[ -n "$wheel" ]]; then
-      if grep -q '^MODEL_WHEEL_URL=' "$env"; then
-        sed -i "s|^MODEL_WHEEL_URL=.*|MODEL_WHEEL_URL=file://${wheel}|" "$env"
-      else
-        printf 'MODEL_WHEEL_URL=file://%s\n' "$wheel" >> "$env"
-      fi
-    fi
   elif [[ "$name" == "models" ]]; then
     sed -i "s|^MODELS_HOME=.*|MODELS_HOME=${SHARED_MODELS}|" "$env"
+  fi
+
+  # 环境总配置（部署根 config.yaml，可选）：components.<name>.<key> 显式覆写
+  local cfg="${AGENT_HOME}/config.yaml"
+  if [[ -f "$cfg" ]]; then
+    log "组件 ${name}: 从环境总配置解析定制项 ${cfg}"
+    python3 - "$cfg" "$name" "$env" <<'PY'
+import re
+import sys
+
+cfg, comp, env_path = sys.argv[1], sys.argv[2], sys.argv[3]
+key_re = re.compile(r"^([A-Za-z0-9_.\-]+)\s*:\s*(.*)$")
+text = open(env_path, encoding="utf-8").read()
+pairs: list[tuple[str, str]] = []
+in_components = False
+in_target = False
+for lineno, raw in enumerate(open(cfg, encoding="utf-8"), start=1):
+    line = raw.rstrip()
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    indent = len(line) - len(line.lstrip())
+    if "\t" in line[:indent]:
+        print(f"[ensure_component_env] 第 {lineno} 行使用了制表符缩进，请改用空格", file=sys.stderr)
+        continue
+    m = key_re.match(line.strip())
+    if m is None:
+        print(f"[ensure_component_env] 第 {lineno} 行无法解析，跳过: {line.strip()[:40]!r}", file=sys.stderr)
+        continue
+    key, value = m.group(1), m.group(2).strip().strip("\"'")
+    if indent == 0:
+        in_components = key == "components"
+        in_target = False
+        continue
+    if not in_components:
+        continue
+    if indent == 2 and not value:
+        in_target = key == comp
+        continue
+    if in_target and indent >= 4:
+        pairs.append((key, value))
+for key, value in pairs:
+    if not value:
+        continue  # 空值 = 不设置，保留模板默认
+    if re.search(rf"^{re.escape(key)}=", text, re.M):
+        text = re.sub(rf"^{re.escape(key)}=.*$", f"{key}={value}", text, flags=re.M)
+    else:
+        text += f"\n{key}={value}\n"
+open(env_path, "w", encoding="utf-8").write(text)
+PY
+  fi
+
+  # spacy 专用兜底：总配置未显式设置 MODEL_WHEEL_URL（模板仍为空）且
+  # 持久目录有本地 wheel → 自动注入 file:// 路径
+  if [[ "$name" == "spacy" ]]; then
+    local wheel
+    wheel="$(ls "${AGENT_HOME%/*}/tmp"/en_core_web_lg-*.whl 2>/dev/null | head -1 || true)"
+    if [[ -n "$wheel" ]] && grep -q '^MODEL_WHEEL_URL=$' "$env"; then
+      sed -i "s|^MODEL_WHEEL_URL=$|MODEL_WHEEL_URL=file://${wheel}|" "$env"
+    fi
   fi
   ok "已生成 ${env}"
 }
