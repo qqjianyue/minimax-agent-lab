@@ -114,6 +114,9 @@ main() {
   # 做一次完整性校验 —— 模型坏掉时在切换前就暴露，而不是上线后才发现。
   # 两个脚本幂等：已装且版本一致时秒级跳过。
   step 4 8 "ML 模型资产（D1 嵌入模型 / D2 spacy）"
+  # env 不进 git：部署时按实际环境从 env.template 生成（幂等，已存在则跳过）
+  ensure_component_env "$rel" spacy
+  ensure_component_env "$rel" models
   bash "${rel}/infra/spacy/setup.sh" install
   bash "${rel}/infra/models/setup.sh" verify
 

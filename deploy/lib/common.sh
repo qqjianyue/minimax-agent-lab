@@ -366,6 +366,44 @@ sync_component_env() {
   fi
 }
 
+#: 部署时按实际环境生成组件 env（infra/spacy/env、infra/models/env）。
+#:
+#: 设计：env.template 入库、env 不进 git（机器本地配置）。此前 env 缺失会让
+#: 部署在 step 4 中止（"缺少配置文件"），需手工 cp+改；现在部署时自动生成。
+#: 已在目标机存在的手工 env 不被覆盖（保留机器特定覆盖）。
+#:
+#: spacy 额外逻辑：若持久 wheel 目录（${AGENT_HOME%/*}/tmp，如
+#: /data/workspace/tmp）下存在本地 wheel，自动写入 MODEL_WHEEL_URL 指向
+#: file:// 本地路径 —— 目标机 GitHub 不可达时免联网，且 wheel 放持久目录
+#: （/tmp 会在重启时被系统清空，已踩过）。
+ensure_component_env() {
+  local rel="$1" name="$2"
+  local dir="${rel}/infra/${name}"
+  local tmpl="${dir}/env.template"
+  local env="${dir}/env"
+  [[ -f "$tmpl" ]] || die "组件 ${name} 缺少 env.template: ${tmpl}"
+  if [[ -f "$env" ]]; then
+    return 0
+  fi
+  log "组件 ${name}: 从 env.template 生成 env（结合实际环境）"
+  cp "$tmpl" "$env"
+  if [[ "$name" == "spacy" ]]; then
+    sed -i "s|^AGENT_HOME=.*|AGENT_HOME=${AGENT_HOME}|" "$env"
+    local wheel
+    wheel="$(ls "${AGENT_HOME%/*}/tmp"/en_core_web_lg-*.whl 2>/dev/null | head -1 || true)"
+    if [[ -n "$wheel" ]]; then
+      if grep -q '^MODEL_WHEEL_URL=' "$env"; then
+        sed -i "s|^MODEL_WHEEL_URL=.*|MODEL_WHEEL_URL=file://${wheel}|" "$env"
+      else
+        printf 'MODEL_WHEEL_URL=file://%s\n' "$wheel" >> "$env"
+      fi
+    fi
+  elif [[ "$name" == "models" ]]; then
+    sed -i "s|^MODELS_HOME=.*|MODELS_HOME=${SHARED_MODELS}|" "$env"
+  fi
+  ok "已生成 ${env}"
+}
+
 stored_fingerprint() {
   local marker="${SHARED_VENV}/.fingerprint"
   [[ -f "$marker" ]] && cat "$marker" || echo "none"
