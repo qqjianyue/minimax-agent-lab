@@ -314,8 +314,8 @@ class TestLlmCallSpan:
             call.record(Completion(usage=Usage(prompt_tokens=1000, completion_tokens=500)))
 
         [span] = telemetry.find("llm_call")
-        assert span.attributes["llm.prompt_tokens"] == 1000
-        assert span.attributes["llm.completion_tokens"] == 500
+        assert span.attributes["llm.token_count.prompt"] == 1000
+        assert span.attributes["llm.token_count.completion"] == 500
         assert span.attributes["llm.token_usage_present"] is True
         # (1000*1 + 500*2) / 1_000_000 = 0.002
         assert span.attributes["llm.cost"] == pytest.approx(0.002)

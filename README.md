@@ -299,7 +299,7 @@ pipeline.run("drop table customers", stage=GuardStage.TOOL).action
 ```
 agent.request              request.id
 ├── input_guard            guard.action / guard.rule / guard.latency_ms
-├── llm_call               llm.prompt_tokens / llm.cost
+├── llm_call               llm.token_count.prompt / llm.token_count.completion / llm.cost
 └── output_guard           guard.action / guard.matched
 ```
 

@@ -116,8 +116,11 @@ class _LlmCallRecorder:
             return
 
         self._span.set_attribute("llm.token_usage_present", True)
-        self._span.set_attribute("llm.prompt_tokens", usage.prompt_tokens)
-        self._span.set_attribute("llm.completion_tokens", usage.completion_tokens)
+        # 属性名对齐 OpenInference 语义约定（Phoenix 据此识别 token 用量并
+        # 关联成本到 span_costs）：llm.token_count.prompt / completion。
+        # 旧名 llm.prompt_tokens 不识别，导致 trace 落库但成本关联为 0（FT-11 实测）。
+        self._span.set_attribute("llm.token_count.prompt", usage.prompt_tokens)
+        self._span.set_attribute("llm.token_count.completion", usage.completion_tokens)
         self._span.set_attribute(
             "llm.cost",
             round(
