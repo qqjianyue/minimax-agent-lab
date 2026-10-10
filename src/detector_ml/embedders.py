@@ -91,9 +91,18 @@ def _resolve_local_dir(local_dir: str | Path | None) -> Path | None:
         return Path(local_dir)
     home = os.environ.get(MODELS_HOME_ENV)
     if home:
-        candidate = Path(home) / DEFAULT_MODEL_NAME
-        if candidate.is_dir():
-            return candidate
+        # 与 infra/models/setup.sh 的布局一致：模型下载到
+        # MODELS_HOME/<repo 尾段>（BAAI/bge-base-zh-v1.5 -> bge-base-zh-v1.5）。
+        # 兼容历史布局（带组织名的全路径目录）。
+        # 注意：这里必须返回存在的本地目录，否则 SentenceTransformer 会把
+        # repo id 当远程源走 hf_hub_download —— L0/L1 离线闸门下直接失败。
+        candidates = (
+            Path(home) / DEFAULT_MODEL_NAME.split("/")[-1],
+            Path(home) / DEFAULT_MODEL_NAME,
+        )
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
     return None
 
 

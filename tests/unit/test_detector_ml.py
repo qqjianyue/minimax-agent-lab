@@ -303,3 +303,46 @@ class TestDetectorRegistry:
 
         with pytest.raises(ValueError, match="检测器名重复"):
             DetectorRegistry([("l1", StubDetector(name="dup")), ("l2", StubDetector(name="dup"))])
+
+
+# --- D1 本地模型目录解析 ----------------------------------------------------
+# 回归：embedders._resolve_local_dir 必须命中 infra/models/setup.sh 的实际
+# 布局（MODELS_HOME/<repo 尾段>），否则 SentenceTransformer 把 repo id 当
+# 远程源走 hf_hub_download —— L0/L1 离线闸门下直接失败（曾被 HF 缓存掩盖）。
+class TestResolveLocalDir:
+    def test_hits_tail_layout(self, tmp_path, monkeypatch) -> None:
+        from detector_ml.embedders import _resolve_local_dir
+
+        tail = tmp_path / "bge-base-zh-v1.5"
+        tail.mkdir()
+        monkeypatch.setenv("MODELS_HOME", str(tmp_path))
+        assert _resolve_local_dir(None) == tail
+
+    def test_hits_org_full_path_layout(self, tmp_path, monkeypatch) -> None:
+        from detector_ml.embedders import _resolve_local_dir
+
+        full = tmp_path / "BAAI" / "bge-base-zh-v1.5"
+        full.mkdir(parents=True)
+        monkeypatch.setenv("MODELS_HOME", str(tmp_path))
+        assert _resolve_local_dir(None) == full
+
+    def test_tail_preferred_over_org_path(self, tmp_path, monkeypatch) -> None:
+        from detector_ml.embedders import _resolve_local_dir
+
+        (tmp_path / "bge-base-zh-v1.5").mkdir()
+        (tmp_path / "BAAI" / "bge-base-zh-v1.5").mkdir(parents=True)
+        monkeypatch.setenv("MODELS_HOME", str(tmp_path))
+        assert _resolve_local_dir(None) == tmp_path / "bge-base-zh-v1.5"
+
+    def test_no_home_returns_none(self, monkeypatch) -> None:
+        from detector_ml.embedders import _resolve_local_dir
+
+        monkeypatch.delenv("MODELS_HOME", raising=False)
+        assert _resolve_local_dir(None) is None
+
+    def test_explicit_local_dir_wins(self, tmp_path) -> None:
+        from detector_ml.embedders import _resolve_local_dir
+
+        explicit = tmp_path / "elsewhere"
+        explicit.mkdir()
+        assert _resolve_local_dir(explicit) == explicit
