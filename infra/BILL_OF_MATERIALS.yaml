@@ -9,25 +9,29 @@ schema_version: 1
 components:
   - name: phoenix
     description: Arize Phoenix —— trace 存储、评估 UI（对应架构方案 §4.3）
-    version: "0.0.0-unpinned"
+    version: "v20.20.0 (image sha256:f66af1843d0dccc2027e577393a544324f11b17ba033dce90343c4e66e1fd539)"
     image: arizephoenix/phoenix
     image_tag: latest
     compose_file: infra/phoenix/compose.yaml
     setup_script: infra/phoenix/setup.sh
     port: 6006
-    state: not-deployed
-    updated: ""
+    state: deployed
+    updated: "2026-10-10"
     notes: >-
-      首次部署（B3）验证通过后，把 image_tag 从 latest 固定为具体版本号，
-      并在应用配置中记录该版本，避免上游 latest 变动导致回退后行为不一致。
+      容器 minimax-agent-phoenix（healthcheck exec 形式直调 python3.13，
+      镜像无 /bin/sh 不能用 CMD-SHELL）；数据在 shared/data/phoenix，
+      应用回退不丢。目标机不能直连 Docker Hub（registry-1.docker.io EOF），
+      只能走镜像加速器拉取；以镜像 ID 为不可变锚点，upgrade 后对比
+      `docker inspect --format '{{.Id}}'` 判断上游漂移。
+      应用侧 telemetry.enabled=true，trace 落库已验证（FT-11）。
 
   - name: embedding-model
     description: sentence-transformers 嵌入模型（D1，中文 bge-base-zh-v1.5，768 维）
     version: "BAAI/bge-base-zh-v1.5@f03589ceff5aac7111bd60cfc7d497ca17ecac65"
     manifest: infra/models/manifest.json
     setup_script: infra/models/setup.sh
-    state: not-deployed
-    updated: ""
+    state: deployed
+    updated: "2026-10-10"
     notes: >-
       目标机**直接下载**（HF_ENDPOINT 镜像备用）；文件级 sha256 在
       manifest.lock.json（首次 install 后生成，写入部署根 integrity/models/，
@@ -39,11 +43,12 @@ components:
     version: "3.8.0"
     manifest: infra/spacy/manifest.json
     setup_script: infra/spacy/setup.sh
-    state: not-deployed
-    updated: ""
+    state: deployed
+    updated: "2026-10-10"
     notes: >-
       装入 shared/venv（与应用大依赖同 venv，指纹复用兼容）；校验以
       spacy.load 真实可加载为准；pip 受限时在组件 env 配 PIP_INDEX_URL。
+      wheel 持久化在 /data/workspace/tmp（/tmp 重启会清空）。
 
 dependencies:
   - name: docker-engine

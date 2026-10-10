@@ -22,8 +22,9 @@ services:
       - ${AGENT_HOME:?AGENT_HOME 未设置，请先复制 env.template 为 env}/shared/data/phoenix:/mnt/data
     healthcheck:
       # 冒烟测试（L2）会查询这个端点确认 Phoenix 真的起来了，
-      # 而不是仅仅"容器在跑"
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=5).status==200 else 1)\""]
+      # 而不是仅仅"容器在跑"。注意镜像极简（无 /bin/sh），
+      # 必须用 exec 数组形式直接调 python3.13，不能用 CMD-SHELL。
+      test: ["CMD", "/usr/bin/python3.13", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=5).status==200 else 1)"]
       interval: 15s
       timeout: 10s
       retries: 5

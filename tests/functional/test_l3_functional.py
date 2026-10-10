@@ -17,7 +17,7 @@
 | FT-08 安全工具调用 | ✅ B5 | C6 |
 | FT-09 检索间接注入 | ⏸ B8 | 需 RAG 组件 |
 | FT-10 检测器超时降级 | ✅ | — |
-| FT-11 成本可观测 | ⏸ D4 | 需 Phoenix 部署（trace 落库与成本可视化） |
+| FT-11 成本可观测 | ✅ | D4 | Phoenix 部署完成（v20.20.0）；断言 trace 落库 + span_costs 非空 |
 | FT-12 审计完整性 | ✅ | — |
 | FT-13 编排响应结构 | ✅ B6 | C7 orchestrator（steps/tools_called/interrupted） |
 | FT-14 编排输入拦截 | ✅ B6 | C7 orchestrator（block 后不进模型/工具） |
@@ -34,6 +34,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import time
 
 import httpx
 import pytest
@@ -343,5 +345,31 @@ class TestPendingScenarios:
     @pytest.mark.skip(reason="需 B8 RAG 组件：检索内容中的间接注入")
     def test_ft09_indirect_injection_in_retrieval(self, http: httpx.Client) -> None: ...
 
-    @pytest.mark.skip(reason="需 D4 Phoenix 部署：trace 落库与成本可视化")
-    def test_ft11_cost_observability(self, http: httpx.Client) -> None: ...
+
+# --- FT-11 成本可观测 -------------------------------------------------------
+class TestFT11CostObservability:
+    """FT-11：成本可观测 —— 真实 chat 的 trace 落库 Phoenix，成本已关联。
+
+    D4 Phoenix 已部署（arizephoenix/phoenix，v20.20.0，镜像 ID
+    sha256:f66af184…，本机直连 Docker Hub 受限故以镜像 ID 为锚点）。
+    断言直接读 Phoenix SQLite（部署机本地文件），验证：
+    1. trace 真实落库（traces >= 1，即本次 chat 的完整 span 树）；
+    2. 成本已关联（span_costs 非空，llm_call span 带 token_usage/cost）。
+    """
+
+    PHOENIX_DB = "/data/workspace/minimax-agent/shared/data/phoenix/phoenix.db"
+
+    def test_cost_trace_lands_in_phoenix(self, http: httpx.Client) -> None:
+        # 触发一次真实 chat（产生 llm_call span，带 token_usage/cost）
+        body = chat(http, "用一句话介绍定期存款")
+        assert body["response"].strip()
+        # exporter 异步导出，稍等落库
+        time.sleep(3)
+        db = sqlite3.connect(self.PHOENIX_DB)
+        try:
+            traces = db.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
+            costs = db.execute("SELECT COUNT(*) FROM span_costs").fetchone()[0]
+        finally:
+            db.close()
+        assert traces >= 1, "Phoenix 中应至少有 1 条 trace（本次 chat 落库）"
+        assert costs >= 1, "llm_call span 应关联成本（span_costs 非空）"

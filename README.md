@@ -272,7 +272,7 @@ pipeline.run("drop table customers", stage=GuardStage.TOOL).action
 | 写入语义 | append-only，只追加不修改 | 异步批量导出 |
 | 保留期 | 365 天（合规留痕） | 90 天（观测数据） |
 | 脱敏 | **落盘前**强制脱敏，没脱敏器就拒绝构造 | 属性出口拦截 |
-| 默认 | 开启 | **关闭**（收集端 Phoenix 尚未部署，见下） |
+| 默认 | 开启 | 关闭（收集端 Phoenix 部署完成后按需开启，见下） |
 
 ### 审计账本
 
@@ -317,7 +317,7 @@ agent.request              request.id
 | | 默认 | 理由 |
 |---|---|---|
 | `telemetry.capture_prompts` | `False` | trace 是**可被调阅**的观测库。宁可少一点上下文，也不让 prompt 原文与 PII 进去 |
-| `telemetry.enabled` | `False` | 可观测性依赖收集端真实存在。Phoenix 尚未部署时若默认开启，服务会起一个后台线程不断重连一个没人监听的端点，失败日志能把真正的告警淹掉 —— 观测设施不可用反过来损害了可观测性 |
+| `telemetry.enabled` | `False` | 可观测性依赖收集端真实存在。Phoenix 未部署时若默认开启，服务会起一个后台线程不断重连一个没人监听的端点，失败日志能把真正的告警淹掉 —— 观测设施不可用反过来损害了可观测性。**Phoenix 已部署后**（D4，v20.20.0，见 `infra/phoenix/` 与 BOM），在 `shared/.env` 设 `MINIMAX_AGENT_TELEMETRY__ENABLED=true` 打开 |
 
 `telemetry.enabled` 打开后还需要一个**显式的关闭路径**：批量导出是异步的，
 不 flush 的话进程退出时内存队列直接丢掉，丢的往往正是故障现场那几条。
@@ -551,7 +551,8 @@ L0+L1 合并覆盖率保持 **94%** 以上（门槛 89.9）。
 - **依赖策略（决策 D7）**：ML 重依赖进 `ml` extras，本地不装（torch/presidio/spacy），
   目标机 `ensure_venv` 带 `--extra ml` 装全量；本地 L0/L1 用 Fake + skipif 测契约。
 - **L3 解锁**：FT-07（危险工具 → require_approval）、FT-08（安全工具执行成功）走真实
-  `/tools/execute` 路径；FT-11 仍 skip（需 D4 Phoenix 部署）。
+  `/tools/execute` 路径；FT-11（成本可观测）随 D4 Phoenix 部署解锁 —— 真实 chat 的
+  trace 落库 Phoenix（SQLite shared/data/phoenix）且 span_costs 非空。
 
 > L2 里 11 条是 B4 新增的可观测性冒烟（账本位置 / 权限 / request_id 关联 / 落盘脱敏）。
 > 它们**直接读目标机文件系统**而不只看 HTTP 响应 —— 有一整类问题只在目标机上

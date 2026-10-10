@@ -75,9 +75,9 @@ sha256 + 体积），**写入部署根 `integrity/models/`（不在 repo 副本 
 
 | 组件 | 版本 | 状态 | 备注 |
 |---|---|---|---|
-| `phoenix` | 见 BILL_OF_MATERIALS | 未部署 | 首次在 B3 批次部署验证后，把 image tag 固定为具体版本 |
-| `embedding-model` | `bge-base-zh-v1.5@f03589ce` | 未部署 | 目标机直连下载（HF_ENDPOINT 镜像备用）；待 B5（C5 detector-ml）接入启动校验 |
-| `spacy-model` | `3.8.0` | 未部署 | 装进 shared/venv；无决策依赖，可随时 install |
+| `phoenix` | `v20.20.0`（镜像 ID 锚点，见 BOM） | 已部署（2026-10-10） | 容器 minimax-agent-phoenix，healthcheck 用 exec 直调 python3.13（镜像无 /bin/sh）；应用 telemetry 已开启，FT-11 已解锁 |
+| `embedding-model` | `bge-base-zh-v1.5@f03589ce` | 已部署（2026-10-10） | 目标机直连下载（HF_ENDPOINT 镜像备用）；完整性凭证在 integrity/models/ |
+| `spacy-model` | `3.8.0` | 已部署（2026-10-10） | 装进 shared/venv；wheel 持久化在 /data/workspace/tmp |
 
 ---
 
