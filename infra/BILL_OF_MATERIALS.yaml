@@ -30,7 +30,8 @@ components:
     updated: ""
     notes: >-
       目标机**直接下载**（HF_ENDPOINT 镜像备用）；文件级 sha256 在
-      manifest.lock.json（首次 install 后生成，入库作为版本事实）。
+      manifest.lock.json（首次 install 后生成，写入部署根 integrity/models/，
+      不跟应用版本号、只跟模型身份，覆盖即更新；不入 git）。
       升级模型 = 改 manifest.revision + 重跑 setup.sh install。
 
   - name: spacy-model

@@ -50,11 +50,14 @@ infra/
 标准库 `json` 是目标机唯一保证存在的解析器 —— 与 deployconfig "只用标准库"
 是同一个哲学。
 
-**模型资产的版本事实 = manifest.lock.json**：`manifest.json` 是声明（人维护，
+**模型资产的完整性凭证 = manifest.lock.json**：`manifest.json` 是声明（人维护，
 入库）；`setup.sh install` 首次成功后生成 `manifest.lock.json`（文件级
-sha256 + 体积，入库），`verify` 只认 lock —— 与 deploy 侧
-requirements.lock 指纹同一模式。升级模型 = 改 `manifest.json` 的
-revision + 重跑 install，生成新 lock。
+sha256 + 体积），**写入部署根 `integrity/models/`（不在 repo 副本 / release
+内，rsync --delete 不触及）**，`verify` 只认凭证（fail-closed），并校验
+凭证内嵌的模型身份 == manifest 声明。**不跟应用版本号**：模型跨版本共享
+（shared/models），凭证只跟模型身份（repo+revision）；模型升级 = 改
+`manifest.json` 的 revision + 重跑 install，凭证覆盖更新（不做历史留档）。
+历史遗留于组件目录的旧 lock 会在首次 verify 时自动迁移到 integrity/。
 
 ---
 

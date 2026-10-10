@@ -11,8 +11,11 @@
 # - 目标机**直接下载**（HF_ENDPOINT 镜像备用），不依赖本机中转。
 #   目标机网络受限时先配 env 的 HF_ENDPOINT=https://hf-mirror.com。
 # - 免 sudo、幂等、不静默生成配置（env 缺失时报错并给出复制命令）。
-# - 完整性 = manifest.lock.json：首次 install 成功后生成，**入库作为版本事实**
-#   （与 deploy 侧 requirements.lock 指纹同一模式）。verify 只认 lock。
+# - 完整性凭证 = manifest.lock.json：首次 install 成功后生成，写入部署根
+#   integrity/models/（${AGENT_HOME}/integrity/models/manifest.lock.json）。
+#   **不跟应用版本号**：模型跨版本共享（shared/models），凭证只跟模型身份
+#   （repo+revision，锁内嵌）；模型升级时重新生成覆盖，不做历史留档。
+#   verify 只认凭证，fail-closed；并校验凭证的模型身份 == manifest 声明。
 # - 文件级 sha256 逐文件比对，缺一个文件或 hash 不匹配即失败 ——
 #   模型的完整性是 D1 的启动前提（B5 落地 C5 时应用侧校验会复用本脚本）。
 
@@ -21,7 +24,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/env"
 MANIFEST="${SCRIPT_DIR}/manifest.json"
-LOCK="${SCRIPT_DIR}/manifest.lock.json"
+
+# 完整性凭证路径：依赖 env 的 AGENT_HOME（load_env 之后才可求值），故用函数。
+# 放在部署根 integrity/ 下（不在 repo 副本 / release 内，rsync --delete 不触及）。
+lock_path() { echo "${AGENT_HOME}/integrity/models/manifest.lock.json"; }
 
 # shellcheck disable=SC1090
 load_env() {
@@ -87,8 +93,10 @@ download_one() {
 }
 
 write_lock() {
-  # 逐文件计算 sha256，生成 manifest.lock.json（与 manifest 声明对齐）
-  python3 - "$(model_dir)" "${MANIFEST}" "${LOCK}" <<'PY'
+  # 逐文件计算 sha256，生成完整性凭证 manifest.lock.json（与 manifest 声明对齐）
+  local lock; lock="$(lock_path)"
+  mkdir -p "$(dirname "$lock")"
+  python3 - "$(model_dir)" "${MANIFEST}" "$lock" <<'PY'
 import json, hashlib, os, sys, datetime
 
 model_dir, manifest_path, lock_path = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -142,16 +150,16 @@ do_install() {
   [[ -z "${MODEL_NAME:-}" || "${MODEL_NAME}" == "${repo}" ]] \
     || die "env 的 MODEL_NAME(${MODEL_NAME}) 与 manifest.repo(${repo}) 不一致"
 
-  local dir; dir="$(model_dir)"
+  local dir lock; dir="$(model_dir)"; lock="$(lock_path)"
   info "模型: ${repo}@${revision}"
   info "目标目录: ${dir}"
 
-  if [[ $force -eq 0 && -f "${LOCK}" ]]; then
+  if [[ $force -eq 0 && -f "$lock" ]]; then
     if bash "${SCRIPT_DIR}/setup.sh" verify >/dev/null 2>&1; then
       ok "已下载且完整性校验通过，跳过（--force 可强制重下）"
       return 0
     fi
-    info "lock 存在但校验未通过，重新下载"
+    info "凭证存在但校验未通过，重新下载"
   fi
 
   mkdir -p "${dir}"
@@ -160,7 +168,7 @@ do_install() {
     download_one "${file}"
   done
   write_lock
-  ok "安装完成。提示：manifest.lock.json 已变更，建议提交进 git 作为版本事实。"
+  ok "安装完成。完整性凭证已写入 ${lock}（integrity/，覆盖即更新）"
 }
 
 do_verify() {
@@ -168,12 +176,30 @@ do_verify() {
   require_tools
   load_env
 
-  [[ -f "${LOCK}" ]] || die "没有 manifest.lock.json —— 尚未安装。请先执行 ./setup.sh install"
+  local lock; lock="$(lock_path)"
+  # 兼容迁移：新位置（integrity/）无凭证、但组件目录有历史遗留 lock → 迁移。
+  # 旧 release 里的 lock 保留不动（历史备份）；迁移后 integrity 独立于
+  # repo 副本 / release，rsync --delete 不触及。
+  if [[ ! -f "$lock" && -f "${SCRIPT_DIR}/manifest.lock.json" ]]; then
+    mkdir -p "$(dirname "$lock")"
+    cp "${SCRIPT_DIR}/manifest.lock.json" "$lock"
+    info "已迁移历史 manifest.lock.json -> ${lock}"
+  fi
+  [[ -f "$lock" ]] || die "没有完整性凭证 ${lock} —— 尚未安装。请先执行 ./setup.sh install"
   [[ -n "${MODELS_HOME:-}" ]] || die "env 中缺少 MODELS_HOME"
+
+  # 凭证与声明一致：凭证内嵌的模型身份必须等于 manifest 声明（防旧凭证配新声明）
+  local lock_repo lock_rev
+  lock_repo="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(d["model"]["repo"])' "$lock")"
+  lock_rev="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(d["model"]["revision"])' "$lock")"
+  [[ "$lock_repo" == "$(manifest_get .model.repo)" ]] \
+    || die "凭证与声明不一致：凭证 repo=${lock_repo}，声明 $(manifest_get .model.repo)"
+  [[ "$lock_rev" == "$(manifest_get .model.revision)" ]] \
+    || die "凭证与声明不一致：凭证 revision=${lock_rev}，声明 $(manifest_get .model.revision)"
 
   local dir; dir="$(model_dir)"
   local rc=0
-  python3 - "${dir}" "${LOCK}" <<'PY' || rc=1
+  python3 - "${dir}" "$lock" <<'PY' || rc=1
 import json, hashlib, os, sys
 
 model_dir, lock_path = sys.argv[1], sys.argv[2]
@@ -207,14 +233,15 @@ PY
 do_status() {
   require_env_file
   load_env
-  if [[ ! -f "${LOCK}" ]]; then
-    info "未安装（无 manifest.lock.json）。执行 ./setup.sh install"
+  local lock; lock="$(lock_path)"
+  if [[ ! -f "$lock" ]]; then
+    info "未安装（无完整性凭证 ${lock}）。执行 ./setup.sh install"
     return 0
   fi
   local dir; dir="$(model_dir)"
-  echo "  lock:     ${LOCK}"
+  echo "  lock:     ${lock}"
   echo "  模型目录: ${dir}"
-  python3 - "${LOCK}" <<'PY'
+  python3 - "$lock" <<'PY'
 import json, sys
 lock = json.load(open(sys.argv[1], encoding="utf-8"))
 print(f"  文件数:   {len(lock['files'])}")

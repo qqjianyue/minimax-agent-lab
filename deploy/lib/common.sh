@@ -401,6 +401,7 @@ ensure_component_env() {
   if [[ "$name" == "spacy" ]]; then
     sed -i "s|^AGENT_HOME=.*|AGENT_HOME=${AGENT_HOME}|" "$env"
   elif [[ "$name" == "models" ]]; then
+    sed -i "s|^AGENT_HOME=.*|AGENT_HOME=${AGENT_HOME}|" "$env"
     sed -i "s|^MODELS_HOME=.*|MODELS_HOME=${SHARED_MODELS}|" "$env"
   fi
 
