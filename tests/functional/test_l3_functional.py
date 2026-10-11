@@ -373,6 +373,19 @@ class TestFT11CostObservability:
                 "SELECT COUNT(*) FROM spans"
                 " WHERE name = 'llm_call' AND attributes LIKE '%cache_read%'"
             ).fetchone()[0]
+            # 成本数值必须是正数（价格配置生效）：span_costs 有行还不够，
+            # 值恒 0 会被误读成"这次调用免费"（见 FT-11 增强：锁价格回归）
+            phx_cost = db.execute(
+                "SELECT total_cost FROM span_costs ORDER BY span_rowid DESC LIMIT 1"
+            ).fetchone()
+            latest_llm = db.execute(
+                "SELECT attributes FROM spans WHERE name = 'llm_call'"
+                " ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            app_cost = None
+            if latest_llm and latest_llm[0]:
+                llm = json.loads(latest_llm[0]).get("llm", {})
+                app_cost = llm.get("cost", {}).get("total")
         finally:
             db.close()
         assert traces >= 1, "Phoenix 中应至少有 1 条 trace（本次 chat 落库）"
@@ -380,4 +393,12 @@ class TestFT11CostObservability:
         assert cache_read >= 1, (
             "llm_call span 应上报缓存命中用量"
             "（llm.token_count.prompt_details.cache_read）"
+        )
+        assert phx_cost is not None and phx_cost[0] > 0, (
+            "Phoenix span_costs 最新行 total_cost 应为非零"
+            "（内置 MiniMax-M3 定价生效，而非有行但金额恒 0）"
+        )
+        assert isinstance(app_cost, (int, float)) and app_cost > 0, (
+            "最新 llm_call span 的人民币成本（llm.cost.total）应为非零"
+            "（程序默认价 4.2/16.8/0.84 生效；0 表示价格配置回归）"
         )
