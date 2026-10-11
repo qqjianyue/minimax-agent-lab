@@ -17,7 +17,7 @@
 | FT-08 安全工具调用 | ✅ B5 | C6 |
 | FT-09 检索间接注入 | ⏸ B8 | 需 RAG 组件 |
 | FT-10 检测器超时降级 | ✅ | — |
-| FT-11 成本可观测 | ✅ | D4 | Phoenix 部署完成（v20.20.0）；断言 trace 落库 + span_costs 非空 |
+| FT-11 成本可观测 | ✅ | D4 | Phoenix 部署完成（v20.20.0）；断言 trace 落库 + span_costs 非空 + cache_read 用量上报 |
 | FT-12 审计完整性 | ✅ | — |
 | FT-13 编排响应结构 | ✅ B6 | C7 orchestrator（steps/tools_called/interrupted） |
 | FT-14 编排输入拦截 | ✅ B6 | C7 orchestrator（block 后不进模型/工具） |
@@ -369,7 +369,15 @@ class TestFT11CostObservability:
         try:
             traces = db.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
             costs = db.execute("SELECT COUNT(*) FROM span_costs").fetchone()[0]
+            cache_read = db.execute(
+                "SELECT COUNT(*) FROM spans"
+                " WHERE name = 'llm_call' AND attributes LIKE '%cache_read%'"
+            ).fetchone()[0]
         finally:
             db.close()
         assert traces >= 1, "Phoenix 中应至少有 1 条 trace（本次 chat 落库）"
         assert costs >= 1, "llm_call span 应关联成本（span_costs 非空）"
+        assert cache_read >= 1, (
+            "llm_call span 应上报缓存命中用量"
+            "（llm.token_count.prompt_details.cache_read）"
+        )

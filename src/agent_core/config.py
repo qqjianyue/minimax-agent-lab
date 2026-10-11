@@ -46,14 +46,19 @@ class LLMSettings(BaseModel):
     timeout_s: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)
 
-    #: 每百万 token 单价，用于 `llm_call` span 的 cost 口径（FT-11）。
+    #: 每百万 token 单价（元/百万 tokens，api.minimax.cn 国内人民币口径），
+    #: 用于 `llm_call` span 的 cost 口径（FT-11）。
     #:
-    #: 默认 0.0 表示**未配置**，不是"免费"。这样区分很重要：
+    #: 默认值为 MiniMax-M3 512k 输入档的**优惠价**（2026-10 官方调价后：
+    #: 输入 8.40 → 永久五折 4.20，输出 33.60 → 16.80，缓存读取 1.68 → 0.84；
+    #: 阿里云百炼、腾讯云 2026-10 公告同口径）。单价与部署环境无关，因此是
+    #: **程序配置**而非机器配置：官方调价时改这里随发版更新。
+    #:
+    #: 显式传 0.0 仍表示"未配置"，不是"免费"。这样区分很重要：
     #: 成本为 0 的 trace 会被误读成"这次调用没花钱"，而真相是"我们没填单价"。
-    #: 真实单价随官方调价变动，因此属于**部署配置**而非代码常量 ——
-    #: 改价不需要改代码、不需要重新发版。
-    price_input_per_million: float = Field(default=0.0, ge=0.0)
-    price_output_per_million: float = Field(default=0.0, ge=0.0)
+    price_input_per_million: float = Field(default=4.2, ge=0.0)
+    price_output_per_million: float = Field(default=16.8, ge=0.0)
+    price_cached_input_per_million: float = Field(default=0.84, ge=0.0)
 
     @model_validator(mode="after")
     def _load_api_key_from_file(self) -> LLMSettings:

@@ -293,9 +293,15 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
 def _parse_usage(raw: Any) -> TokenUsage:
     if not isinstance(raw, dict):
         return TokenUsage()
+    # MiniMax（OpenAI 兼容）缓存命中用量在 prompt_tokens_details.cached_tokens
+    # （目标机实测：{"prompt_tokens": 181, "completion_tokens": 34,
+    #               "prompt_tokens_details": {"cached_tokens": 128}}）
+    details = raw.get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
     return TokenUsage(
         prompt_tokens=_as_int(raw.get("prompt_tokens")),
         completion_tokens=_as_int(raw.get("completion_tokens")),
+        cached_prompt_tokens=_as_int(cached),
     )
 
 

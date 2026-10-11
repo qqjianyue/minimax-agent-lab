@@ -192,6 +192,7 @@ def build_container(
         resolved_telemetry,
         price_input_per_million=resolved_settings.llm.price_input_per_million,
         price_output_per_million=resolved_settings.llm.price_output_per_million,
+        price_cached_input_per_million=resolved_settings.llm.price_cached_input_per_million,
     )
 
     # --- C8 审计账本 ---

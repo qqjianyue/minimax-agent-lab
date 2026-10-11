@@ -316,10 +316,14 @@ class TestLlmCallSpan:
         [span] = telemetry.find("llm_call")
         assert span.attributes["llm.token_count.prompt"] == 1000
         assert span.attributes["llm.token_count.completion"] == 500
+        assert span.attributes["llm.token_count.prompt_details.cache_read"] == 0
+        assert span.attributes["llm.token_count.total"] == 1500
         assert span.attributes["llm.token_usage_present"] is True
-        # (1000*1 + 500*2) / 1_000_000 = 0.002
-        assert span.attributes["llm.cost"] == pytest.approx(0.002)
+        # (1000*1 + 500*2) / 1_000_000 = 0.002（无缓存命中时）
+        assert span.attributes["llm.cost.total"] == pytest.approx(0.002)
         assert span.attributes["llm.model"] == "MiniMax-M3"
+        assert span.attributes["llm.model_name"] == "MiniMax-M3"
+        assert span.attributes["openinference.span.kind"] == "LLM"
 
     def test_missing_usage_is_flagged_not_crashed(self) -> None:
         from dataclasses import dataclass
@@ -362,7 +366,7 @@ class TestLlmCallSpan:
             call.record(Completion(usage=Usage()))
 
         [span] = telemetry.find("llm_call")
-        assert span.attributes["llm.cost"] == 0.0
+        assert span.attributes["llm.cost.total"] == 0.0
 
 
 class TestCostEstimation:
@@ -393,6 +397,60 @@ class TestCostEstimation:
             )
             == 0.0
         )
+
+    def test_cached_tokens_use_discounted_rate(self) -> None:
+        """缓存命中 token 按 cache_read 优惠单价计，未命中按标准输入单价计。"""
+        from dataclasses import dataclass
+
+        @dataclass
+        class Usage:
+            prompt_tokens: int = 10_000
+            completion_tokens: int = 20_000
+            cached_prompt_tokens: int = 4_000
+
+        cost = estimate_cost(
+            Usage(),
+            price_input_per_million=2.0,
+            price_output_per_million=3.0,
+            price_cached_input_per_million=0.5,
+        )
+        # (10000-4000)*2 + 4000*0.5 + 20000*3 = 12000 + 2000 + 60000 = 74000
+        assert cost == pytest.approx(74_000 / 1_000_000)
+
+    def test_cache_price_defaults_to_input_price(self) -> None:
+        """未配置缓存单价时按输入单价计（不低估成本，保守口径）。"""
+        from dataclasses import dataclass
+
+        @dataclass
+        class Usage:
+            prompt_tokens: int = 10_000
+            completion_tokens: int = 0
+            cached_prompt_tokens: int = 4_000
+
+        cost = estimate_cost(
+            Usage(), price_input_per_million=2.0, price_output_per_million=3.0
+        )
+        # 全部按输入单价：(10000-4000)*2 + 4000*2 = 20000
+        assert cost == pytest.approx(20_000 / 1_000_000)
+
+    def test_cached_tokens_clamped_to_prompt(self) -> None:
+        """防御：缓存命中数超过输入总量时按输入总量截断。"""
+        from dataclasses import dataclass
+
+        @dataclass
+        class Usage:
+            prompt_tokens: int = 100
+            completion_tokens: int = 0
+            cached_prompt_tokens: int = 500
+
+        cost = estimate_cost(
+            Usage(),
+            price_input_per_million=2.0,
+            price_output_per_million=3.0,
+            price_cached_input_per_million=0.5,
+        )
+        # 截断后 cached=100：100*0.5 = 50
+        assert cost == pytest.approx(50 / 1_000_000)
 
 
 class TestSpanTree:

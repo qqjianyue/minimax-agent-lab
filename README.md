@@ -299,8 +299,40 @@ pipeline.run("drop table customers", stage=GuardStage.TOOL).action
 ```
 agent.request              request.id
 ├── input_guard            guard.action / guard.rule / guard.latency_ms
-├── llm_call               llm.token_count.prompt / llm.token_count.completion / llm.cost
+├── llm_call               llm.model_name / openinference.span.kind
+│                          llm.token_count.prompt / completion / total
+│                          llm.token_count.prompt_details.cache_read
+│                          llm.cost.total / llm.cost.prompt / llm.cost.completion
+│                          llm.cost.prompt_details.cache_read
+│                          llm.token_price.input / cache_read / output
 └── output_guard           guard.action / guard.matched
+```
+
+**成本口径（FT-11 落点）**：`llm.cost.total` 是业务侧按**人民币优惠单价**
+自算的精确口径（输入 4.2 / 输出 16.8 / 缓存命中 0.84 元·百万 token，2026-10
+官方五折价，见 `agent_core/config.py`）。缓存命中用量取自 MiniMax 响应的
+`usage.prompt_tokens_details.cached_tokens`（实测存在，如 181 输入中 128 命中），
+计费公式 `(prompt−cached)×输入价 + cached×缓存价 + completion×输出价`。
+
+注意：Phoenix 的 `span_costs` 表由 daemon 用**内置模型定价目录**（litellm
+美元价，`minimax/MiniMax-M3` 已在清单中）从 token_count 另算，**不读**
+`llm.cost.total`——两个口径并存：`span_costs` 是 Phoenix 美元价，`llm.cost.*`
+是人民币价。`openinference.span.kind=LLM` 与 `llm.model_name` 是
+`should_calculate_span_cost` 的必需前置（缺一则 span_costs 恒空，FT-11 曾实测踩到）。
+
+**Phoenix 大屏缓存命中率（SQL，UI 查询）**：
+
+```sql
+SELECT name,
+       COUNT(*)                                                  AS span_count,
+       SUM(json_extract(attributes, '$.llm.token_count.prompt')) AS prompt_tokens,
+       SUM(json_extract(attributes, '$.llm.token_count.prompt_details.cache_read')) AS cache_read_tokens,
+       ROUND(100.0 * SUM(json_extract(attributes, '$.llm.token_count.prompt_details.cache_read'))
+             / NULLIF(SUM(json_extract(attributes, '$.llm.token_count.prompt')), 0), 2)
+       AS cache_hit_rate_pct
+FROM spans
+WHERE name = 'llm_call'
+GROUP BY name;
 ```
 
 两个刻意的设计：

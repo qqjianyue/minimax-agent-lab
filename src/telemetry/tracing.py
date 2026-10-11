@@ -42,17 +42,38 @@ def estimate_cost(
     *,
     price_input_per_million: float,
     price_output_per_million: float,
+    price_cached_input_per_million: float | None = None,
 ) -> float:
-    """按每百万 token 单价估算一次调用的成本。
+    """按每百万 token 单价估算一次调用的成本（含缓存差异化计费）。
 
-    刻意叫 ``estimate``：单价来自**部署配置**，可能滞后于官方调价，
-    所以它是个估算口径而不是账单。单价为 0 时返回 0.0，
-    表示"未配置单价"而不是"这次调用免费"—— 两者在排障时含义完全不同，
-    所以宁可返回 0 也不要编一个看起来合理的数字。
+    MiniMax prompt 缓存是差异化计费：命中缓存的输入 token 按优惠的
+    cache_read 单价计，未命中的新增输入按标准输入单价计。公式：
+
+        cost = (prompt − cached) × 输入单价
+             + cached × 缓存命中单价
+             + completion × 输出单价
+
+    没有缓存用量（或未配置缓存单价）时退化为原来的两档公式，
+    其中缓存单价缺省按**输入单价**处理 —— 不低估成本（保守口径）。
+
+    单价为 0 时返回 0.0，表示"未配置单价"而不是"这次调用免费"——
+    两者在排障时含义完全不同，所以宁可返回 0 也不要编一个看起来合理的数字。
     """
     prompt = getattr(usage, "prompt_tokens", 0) or 0
     completion = getattr(usage, "completion_tokens", 0) or 0
-    return (prompt * price_input_per_million + completion * price_output_per_million) / 1_000_000
+    cached = getattr(usage, "cached_prompt_tokens", 0) or 0
+    cached = min(cached, prompt)  # 防御：缓存命中数不可能超过输入总量
+    input_price = price_input_per_million
+    cache_price = (
+        price_cached_input_per_million
+        if price_cached_input_per_million is not None
+        else input_price
+    )
+    return (
+        (prompt - cached) * input_price
+        + cached * cache_price
+        + completion * price_output_per_million
+    ) / 1_000_000
 
 
 class _GuardRecorder:
@@ -102,12 +123,20 @@ class _GuardRecorder:
 class _LlmCallRecorder:
     """``llm_call`` span 的出口记录器。FT-11 的落点。"""
 
-    __slots__ = ("_span", "_price_in", "_price_out")
+    __slots__ = ("_span", "_price_in", "_price_out", "_price_cached")
 
-    def __init__(self, span: SpanPort, *, price_in: float, price_out: float) -> None:
+    def __init__(
+        self,
+        span: SpanPort,
+        *,
+        price_in: float,
+        price_out: float,
+        price_cached: float | None = None,
+    ) -> None:
         self._span = span
         self._price_in = price_in
         self._price_out = price_out
+        self._price_cached = price_cached
 
     def record(self, completion: Any) -> None:
         usage = getattr(completion, "usage", None)
@@ -116,25 +145,59 @@ class _LlmCallRecorder:
             return
 
         self._span.set_attribute("llm.token_usage_present", True)
-        # 属性名对齐 OpenInference 语义约定（Phoenix 据此识别 token 用量并
-        # 关联成本到 span_costs）：llm.token_count.prompt / completion。
-        # 旧名 llm.prompt_tokens 不识别，导致 trace 落库但成本关联为 0（FT-11 实测）。
+        # 属性名对齐 OpenInference 语义约定（Phoenix 据此识别 token 用量、
+        # 计算 span_costs）：llm.token_count.prompt / completion /
+        # prompt_details.cache_read / total。旧名 llm.prompt_tokens 不识别，
+        # 导致 trace 落库但成本关联为 0（FT-11 实测）。
+        cached = getattr(usage, "cached_prompt_tokens", 0) or 0
         self._span.set_attribute("llm.token_count.prompt", usage.prompt_tokens)
         self._span.set_attribute("llm.token_count.completion", usage.completion_tokens)
-        self._span.set_attribute(
-            "llm.cost",
-            round(
-                estimate_cost(
-                    usage,
-                    price_input_per_million=self._price_in,
-                    price_output_per_million=self._price_out,
-                ),
-                8,
+        self._span.set_attribute("llm.token_count.prompt_details.cache_read", cached)
+        total = getattr(usage, "total_tokens", None)
+        if total is None:
+            total = int(usage.prompt_tokens) + int(usage.completion_tokens)
+        self._span.set_attribute("llm.token_count.total", total)
+
+        cost_total = round(
+            estimate_cost(
+                usage,
+                price_input_per_million=self._price_in,
+                price_output_per_million=self._price_out,
+                price_cached_input_per_million=self._price_cached,
             ),
+            8,
         )
+        # llm.cost.* 显式上报业务侧自算的成本（人民币口径，含缓存优惠价）。
+        # 注意：Phoenix v20 的 span_costs 表由 daemon 用**内置模型定价目录**
+        # （美元价）从 token_count 另算，不读这里的值；llm.cost.total 用于
+        # UI 展示与自定义成本公式（配自定义单价属性）。
+        self._span.set_attribute("llm.cost.total", cost_total)
+        if cost_total > 0:
+            prompt_cost = round(
+                (usage.prompt_tokens - cached) * self._price_in / 1_000_000, 8
+            )
+            cache_cost = round(cached * (self._price_cached or self._price_in) / 1_000_000, 8)
+            completion_cost = round(
+                usage.completion_tokens * self._price_out / 1_000_000, 8
+            )
+            self._span.set_attribute("llm.cost.prompt", prompt_cost)
+            self._span.set_attribute(
+                "llm.cost.prompt_details.cache_read", cache_cost
+            )
+            self._span.set_attribute("llm.cost.completion", completion_cost)
+            # 自定义单价属性：供 Phoenix UI 做人民币口径成本公式/看板
+            self._span.set_attribute("llm.token_price.input", self._price_in)
+            self._span.set_attribute(
+                "llm.token_price.cache_read", self._price_cached or self._price_in
+            )
+            self._span.set_attribute("llm.token_price.output", self._price_out)
         model = getattr(completion, "model", "") or ""
         if model:
             self._span.set_attribute("llm.model", model)
+            # OpenInference 标准键。Phoenix 的 should_calculate_span_cost 用
+            # llm.model_name 匹配内置模型定价目录（MiniMax-M3 在清单里，
+            # 命中后才从 token_count 计算 span_costs）。
+            self._span.set_attribute("llm.model_name", model)
 
 
 class Instrumentation:
@@ -149,10 +212,12 @@ class Instrumentation:
         *,
         price_input_per_million: float = 0.0,
         price_output_per_million: float = 0.0,
+        price_cached_input_per_million: float | None = None,
     ) -> None:
         self._telemetry = telemetry
         self._price_in = price_input_per_million
         self._price_out = price_output_per_million
+        self._price_cached = price_cached_input_per_million
         self._shutdown = False
 
     @contextmanager
@@ -177,12 +242,21 @@ class Instrumentation:
     def llm_call(self, *, model: str, **attributes: Any) -> Iterator[_LlmCallRecorder]:
         """开启一个模型调用 span。遥测在**调用侧**闭环（架构方案 §1）。"""
         with self._telemetry.start_span(
-            "llm_call", **{"llm.model": model, **attributes}
+            "llm_call",
+            **{
+                "llm.model": model,
+                # OpenInference 标准键：Phoenix 识别 LLM span 并计算成本
+                # （should_calculate_span_cost 要求 openinference.span.kind=LLM
+                # 且 llm.model_name 非空；llm.model_name 在 record 里补）。
+                "openinference.span.kind": "LLM",
+                **attributes,
+            },
         ) as span:
             yield _LlmCallRecorder(
                 span,
                 price_in=self._price_in,
                 price_out=self._price_out,
+                price_cached=self._price_cached,
             )
 
     @contextmanager

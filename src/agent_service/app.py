@@ -454,6 +454,7 @@ def _usage_dict(usage: TokenUsage) -> dict[str, int]:
     return {
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
+        "cached_tokens": usage.cached_prompt_tokens,
         "total_tokens": usage.total_tokens,
     }
 

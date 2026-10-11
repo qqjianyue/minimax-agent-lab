@@ -28,14 +28,20 @@ class TokenUsage:
 
     这是 ``llm_call`` span 上最核心的成本口径字段，也是"遥测在调用侧闭环"
     的具体载体 —— MiniMax 是外部 SaaS，服务端指标不可得，用量只能从这里取。
+    ``cached_prompt_tokens`` 是 prompt 缓存命中数（MiniMax 返回
+    ``usage.prompt_tokens_details.cached_tokens``），差异化计费需要它：
+    命中部分按 cache_read 优惠单价，未命中部分按标准输入单价。
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.prompt_tokens < 0 or self.completion_tokens < 0:
             raise ValueError("token 用量不能为负数")
+        if self.cached_prompt_tokens < 0:
+            raise ValueError("缓存命中 token 不能为负数")
 
     @property
     def total_tokens(self) -> int:

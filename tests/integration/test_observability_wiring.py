@@ -376,7 +376,10 @@ class TestSpanWiring:
         [llm_span] = telemetry.find("llm_call")
         assert llm_span.attributes["llm.token_usage_present"] is True
         # 配了单价就必须算出非零成本；算出 0 会被误读成"这次调用免费"
-        assert llm_span.attributes["llm.cost"] > 0.0
+        assert llm_span.attributes["llm.cost.total"] > 0.0
+        # OpenInference 标准键：Phoenix 据此识别 LLM span 并计算 span_costs
+        assert llm_span.attributes["openinference.span.kind"] == "LLM"
+        assert llm_span.attributes["llm.model_name"]
 
     def test_blocked_input_emits_no_llm_span(self, tmp_path: Path) -> None:
         """被拦截时不调模型，也就不能有 llm_call span。

@@ -257,6 +257,26 @@ class TestParseResponse:
     def test_negative_usage_clamped(self) -> None:
         assert parse_response(ok_response(usage={"prompt_tokens": -5})).usage.prompt_tokens == 0
 
+    def test_cached_tokens_parsed_from_details(self) -> None:
+        """MiniMax 缓存命中用量在 prompt_tokens_details.cached_tokens。"""
+        body = ok_response(
+            usage={
+                "prompt_tokens": 181,
+                "completion_tokens": 34,
+                "total_tokens": 215,
+                "prompt_tokens_details": {"cached_tokens": 128},
+            }
+        )
+        usage = parse_response(body).usage
+        assert usage.prompt_tokens == 181
+        assert usage.completion_tokens == 34
+        assert usage.cached_prompt_tokens == 128
+        assert usage.total_tokens == 215
+
+    def test_cached_tokens_absent_when_no_details(self) -> None:
+        body = ok_response(usage={"prompt_tokens": 11, "completion_tokens": 7})
+        assert parse_response(body).usage.cached_prompt_tokens == 0
+
 
 # --- 错误映射 ---------------------------------------------------------------
 class TestErrorMapping:
