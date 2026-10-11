@@ -176,31 +176,52 @@ LABEL_KINDS: dict[str, str] = {
 def classify_evidence(evidence: list[str], labels: list[str]) -> list[dict[str, str]]:
     """把一次命中的证据归成「被误伤的东西的种类」。
 
-    Presidio 命中在账本里是脱敏过的（``[REDACTED:LOCATION]``），但**实体类型
-    是保留的** —— 而实体类型恰好就是分类所需的全部信息：它告诉你遮掉的
-    是地址、是人名，还是身份证号。L1 规则命中则是明文片段，直接按标签归类。
+    证据在账本里有三种形态，三种都要认：
+
+    - ``[REDACTED:CN_ID]`` —— C4 正则脱敏器写的，**保留实体类型**；
+    - ``NRP:C***`` —— Presidio 原生写法 ``<实体类型>:<掩码>``，同样保留类型；
+    - ``Ignore all previous instructions`` —— L1 规则命中的明文片段。
+
+    前两种的**实体类型就是分类所需的全部信息**：它告诉你遮的是地址、人名还是
+    身份证号。第三种没有类型，按标签归为攻击话术。
 
     返回空列表表示这次命中没有可用证据（例如 fail-closed）。
     """
-    if labels:
-        kind = LABEL_KINDS.get(labels[0], "other")
-        if kind == "pii_entity":
-            kinds = []
-            for ev in evidence:
-                m = re.search(r"\[REDACTED:([A-Z_]+)\]", ev)
-                if m:
-                    kinds.append(EVIDENCE_KINDS.get(m.group(1), m.group(1)))
-                elif _IDENTIFIER.match(ev.strip()):
-                    kinds.append("identifier")
-                else:
-                    kinds.append("unclassified_pii")
-            # 去重保序
-            seen: dict[str, None] = {}
-            for k in kinds:
-                seen.setdefault(k, None)
-            return [{"kind": k, "evidence": ""} for k in seen]
+    if not labels:
+        return []
+    kind = LABEL_KINDS.get(labels[0], "other")
+    if kind != "pii_entity":
         return [{"kind": kind, "evidence": evidence[0][:60] if evidence else ""}]
-    return []
+
+    kinds: list[str] = []
+    for ev in evidence:
+        entity = _entity_of(ev)
+        if entity:
+            kinds.append(EVIDENCE_KINDS.get(entity, entity))
+        elif _IDENTIFIER.match(ev.strip()):
+            kinds.append("identifier")
+        else:
+            kinds.append("unclassified_pii")
+    # 去重保序
+    seen: dict[str, None] = {}
+    for k in kinds:
+        seen.setdefault(k, None)
+    return [{"kind": k, "evidence": ""} for k in seen]
+
+
+def _entity_of(evidence: str) -> str | None:
+    """从证据串里取出实体类型；取不到返回 None。
+
+    两种形态都要认 —— 只认一种会让整张分类表退化成 ``unclassified_pii``，
+    而那看起来像个结论，其实只是正则没匹配上。
+    """
+    m = re.match(r"^\[REDACTED:([A-Z_]+)\]$", evidence.strip())
+    if m:
+        return m.group(1)
+    m = re.match(r"^([A-Z][A-Z_]{2,15}):\S+$", evidence.strip())
+    if m:
+        return m.group(1)
+    return None
 
 
 def load_ledger_index(path: Path) -> dict[str, list[dict[str, Any]]]:
@@ -224,8 +245,16 @@ def load_ledger_index(path: Path) -> dict[str, list[dict[str, Any]]]:
 
 def attach_evidence(
     samples: list[dict[str, Any]], ledger_path: Path
-) -> dict[str, dict[str, int]]:
+) -> dict[str, int]:
     """把账本里的命中证据回填到样本上，并汇总成一张分布表。
+
+    **只统计该样本自身归因所在检测点的记录** —— 这一条是必须的。一次
+    ``/chat`` 在账本里会留下 input / retrieval / tool / output 多条记录，
+    而**检索文档被隔离也是 ``action=block``**。不做检测点过滤，那批隔离
+    记录会被当成「输出侧误报注入话术」算进来：实测第一版就栽在这里，
+    凭空造出一个 26 次的 ``unknown/none · attack_phrase``。
+
+    放行样本与隔离样本都不计入 —— 前者没有请求级误报，后者是防线在正常工作。
 
     返回的键形如 ``"output/redact_pii · person_name"``，值是次数。
     """
@@ -233,11 +262,19 @@ def attach_evidence(
     summary: dict[str, int] = {}
     for s in samples:
         rid = s.get("request_id") or ""
-        hits: list[dict[str, Any]] = []
-        for rec in index.get(rid, []):
-            if rec.get("action") == "allow":
-                continue
-            hits.append(rec)
+        attribution = s.get("attribution") or ""
+        stage = attribution.split(":")[0] if ":" in attribution else ""
+        if not stage or stage == "retrieval":
+            s["evidence"] = []
+            s["hit_labels"] = []
+            s["detectors"] = []
+            continue
+
+        hits = [
+            rec
+            for rec in index.get(rid, [])
+            if rec.get("stage") == stage and rec.get("action") != "allow"
+        ]
         s["evidence"] = [e for rec in hits for e in (rec.get("evidence") or [])]
         s["hit_labels"] = sorted(
             {lab for rec in hits for lab in (rec.get("hit_labels") or [])}
@@ -245,13 +282,11 @@ def attach_evidence(
         s["detectors"] = sorted(
             {d for rec in hits for d in (rec.get("detectors") or [])}
         )
-        stage = (s.get("attribution") or "").split(":")[0] or "unknown"
         rule = s.get("rule_name") or "none"
         for item in classify_evidence(s["evidence"], s["hit_labels"]):
             key = f"{stage}/{rule} · {item['kind']}"
             summary[key] = summary.get(key, 0) + 1
     return dict(sorted(summary.items(), key=lambda kv: -kv[1]))
-
 
 def run_round(base: str, round_no: int, timeout: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
