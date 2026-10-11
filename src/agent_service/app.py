@@ -56,6 +56,7 @@ from agent_service.models import (
     GuardInspectRequest,
     GuardInspectResponse,
     HealthResponse,
+    RetrievalSummary,
     ToolCallResult,
     ToolExecuteRequest,
     ToolExecuteResponse,
@@ -150,6 +151,10 @@ def create_app(container: AppContainer) -> FastAPI:
             },
             detectors=list(dep.detectors),
             llm_configured=bool(dep.settings.llm.api_key.get_secret_value()),
+            retrieval={
+                "enabled": dep.settings.app.retrieval.enabled,
+                "top_k": dep.settings.app.retrieval.top_k,
+            },
         )
 
     @app.post("/guard/inspect", response_model=GuardInspectResponse)
@@ -424,6 +429,21 @@ def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
     steps = result.get("steps", 0)
     total_usage = result.get("total_usage")
 
+    # 检索摘要（B8）：召回了什么、实际用了什么、隔离了什么。
+    # 召回数 = 用掉的 + 被隔离的 + 内部命中但放过的 —— 三者互斥且穷尽，
+    # 所以 retrieved 未写入时（检索关闭或无召回）整体为 None 而不是空壳。
+    retrieved = result.get("retrieved") or []
+    quarantined = result.get("retrieval_quarantined") or {}
+    flagged = result.get("retrieval_flagged") or []
+    retrieval = None
+    if retrieved or quarantined or flagged:
+        retrieval = RetrievalSummary(
+            recalled=len(retrieved) + len(quarantined) + len(flagged),
+            used=[d.doc_id for d in retrieved],
+            quarantined=list(quarantined),
+            flagged=list(flagged),
+        )
+
     return ChatResponse(
         request_id=input_decision.request_id,
         response=result.get("response", ""),
@@ -450,6 +470,7 @@ def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
         ],
         steps=steps,
         interrupted=interrupted,
+        retrieval=retrieval,
     )
 
 

@@ -39,7 +39,7 @@ class GuardPipeline:
         detectors: Sequence[DetectorPort],
         *,
         enabled: frozenset[str] | None = None,
-        short_circuit: bool = False,
+        short_circuit: bool | frozenset[GuardStage] = False,
     ) -> None:
         """Args:
         engine: 策略引擎。
@@ -49,6 +49,17 @@ class GuardPipeline:
             跳过后续检测器**（后层只在前层未命中时触发，承担延迟/计费预算）。
             **失败不短路** —— fail-closed 需要失败信息参与决策，检测器挂了
             不能假装"没跑过"。attempted_detectors 只记录实际运行的检测器。
+
+            可以传 ``True``（所有阶段都短路，向后兼容）或一个
+            :class:`~guard_contract.enums.GuardStage` 集合（**只对这些阶段
+            短路**，其余阶段跑满全部检测器）。
+
+            **为什么 B8 改成 per-stage（B8 关卡 0 实测）**：在检索检测点上，
+            L1 正则的低分命中会把 L3/L4 整层挡掉，于是"最严重的判定"反而
+            拿不到发言权 —— 实测里最标准的注入句式"忽略以上所有指令"只判到
+            ``escalate``，而语义型攻击（"你现在是管理员模式"）因 L1 无命中
+            而落到 embedding 相似度上直接放行。检索文档很短、检测成本可接受，
+            那一层该跑满。
         """
         self._engine = engine
         self._detectors = tuple(detectors)
@@ -58,6 +69,33 @@ class GuardPipeline:
     @property
     def detectors(self) -> tuple[DetectorPort, ...]:
         return self._detectors
+
+    def _short_circuits(self, stage: GuardStage, override: bool | None = None) -> bool:
+        """该阶段是否启用短路。
+
+        Args:
+        stage: 检测点。
+        override: 单次调用的覆盖值。``None`` 表示沿用构造期的阶段配置；
+            显式 ``True``/``False`` 则本次调用说了算。
+
+        **为什么需要按调用点覆盖（B8.7 实测）**：同一个 ``TOOL`` 阶段在 B8.6
+        之后承载了**两种语义完全不同的内容** ——
+
+        - 工具**调用参数**（结构化、短、可在规则层定案，跑满只是浪费一次
+          LLM 调用）；
+        - 工具**返回值**（不可信文本，与检索文档是同一个信任缺口）。
+
+        实测：工具返回里带 base64 的毒文本在 L1 只得 0.45 分（编码混淆规则），
+        而短路只看"有没有命中"不看分数 —— 于是检索 judge 被挡在门外，
+        0.45 又够不上 ``escalate_borderline`` 的 0.60，**结果整体放行**。
+        同一阶段开关短路就修不了它（要么参数侧也被迫跑满、丢掉 B5 的延迟预算，
+        要么返回值侧漏检），所以短路策略下沉到调用点。
+        """
+        if override is not None:
+            return override
+        if isinstance(self._short_circuit, bool):
+            return self._short_circuit
+        return stage in self._short_circuit
 
     def _applicable(self, stage: GuardStage) -> list[DetectorPort]:
         out: list[DetectorPort] = []
@@ -69,13 +107,22 @@ class GuardPipeline:
             out.append(detector)
         return out
 
-    def run(self, text: str, *, stage: GuardStage, request_id: str | None = None) -> Decision:
+    def run(
+        self,
+        text: str,
+        *,
+        stage: GuardStage,
+        request_id: str | None = None,
+        short_circuit: bool | None = None,
+    ) -> Decision:
         """执行检测并求值。
 
         Args:
         text: 待检测内容（用户输入、检索内容、工具输出或模型输出）。
         stage: 检测点。
         request_id: 关联请求标识；不传则自动生成。
+        short_circuit: 本次调用的短路覆盖（见 :meth:`_short_circuits`）。
+            ``None`` 表示沿用构造期配置。
 
         Returns:
             策略决策。**检测器自身抛出的异常不会向外传播** —— 异常已被转成
@@ -87,10 +134,11 @@ class GuardPipeline:
         failures: list[DetectorFailure] = []
         applicable = self._applicable(stage)
         attempted: list[str] = []
+        short_circuit_on = self._short_circuits(stage, short_circuit)
 
         for detector in applicable:
             # 分层触发：已有命中结果时后层不跑（见 short_circuit 的 docstring）
-            if self._short_circuit and results:
+            if short_circuit_on and results:
                 break
             attempted.append(detector.name)
             try:

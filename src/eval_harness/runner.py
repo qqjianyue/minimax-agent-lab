@@ -62,6 +62,8 @@ class CaseVerdict:
     latency_ms: float = 0.0
     #: 命中规则（pipeline 模式可读）
     rule_name: str | None = None
+    #: 本样本实际跑的检测点（B8）。不显式标注的样本用运行器默认值。
+    stage: str = GuardStage.INPUT.value
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -69,6 +71,7 @@ class CaseVerdict:
             "category": self.category,
             "expected": self.expected,
             "expected_intercept": self.expected_intercept,
+            "stage": self.stage,
             "action": self.action.value if self.action else None,
             "intercepted": self.intercepted,
             "score": round(self.score, 4),
@@ -85,6 +88,15 @@ def _is_intercept(action: PolicyAction) -> bool:
 def _expected_intercept(expected: str) -> bool:
     """期望动作是否算"拦截"：allow 放行，block/redact 均拦截。"""
     return expected != "allow"
+
+
+def _stage_for(case: EvalCase, default: GuardStage) -> GuardStage:
+    """样本自带的检测点优先，否则用运行器默认值。
+
+    B8 起数据集允许逐样本声明检测点 —— 间接注入的载荷不在用户输入里，
+    拿 input 去量它等于换了一把尺子（见 :class:`~eval_harness.dataset.EvalCase`）。
+    """
+    return case.stage if case.stage is not None else default
 
 
 class EvalRunner:
@@ -141,11 +153,12 @@ class EvalRunner:
 
     def _run_pipeline(self, case: EvalCase) -> Decision:
         pipeline = self._target  # type: GuardPipeline
-        return pipeline.run(case.text, stage=self._stage)
+        return pipeline.run(case.text, stage=_stage_for(case, self._stage))
 
     def _run_detector(self, case: EvalCase, start: float) -> CaseVerdict:
         detector = self._target  # type: DetectorPort
-        results = detector.detect(case.text, stage=self._stage)
+        stage = _stage_for(case, self._stage)
+        results = detector.detect(case.text, stage=stage)
         latency = (time.perf_counter() - start) * 1000.0
         score = max((r.score for r in results), default=0.0)
         intercepted = score >= self._threshold
@@ -159,6 +172,7 @@ class EvalRunner:
             score=score,
             results=tuple(results),
             latency_ms=latency,
+            stage=stage.value,
         )
 
 
@@ -174,6 +188,7 @@ def _verdict_from_decision(case: EvalCase, decision: Decision, latency_ms: float
         results=decision.results,
         latency_ms=latency_ms,
         rule_name=decision.rule_name,
+        stage=decision.stage.value,
     )
 
 

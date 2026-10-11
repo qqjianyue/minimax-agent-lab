@@ -24,6 +24,14 @@ from detector_ml.embedding_similarity import (
     SAMPLES_VERSION,
     EmbeddingSimilarityDetector,
 )
+from detector_ml.indirect_injection import (
+    DEFAULT_MIN_CONFIDENCE,
+    RETRIEVAL_JUDGE_PROMPT,
+    IndirectInjectionDetector,
+)
+from detector_ml.indirect_injection import (
+    PROMPT_VERSION as RETRIEVAL_PROMPT_VERSION,
+)
 from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT, JUDGE_VERSION, LLMJudgeDetector
 from detector_ml.presidio_pii import (
     EN_MODEL,
@@ -47,6 +55,7 @@ __all__ = [
     "ATTACK_SAMPLES",
     "DEFAULT_MODEL_NAME",
     "DEFAULT_THRESHOLD",
+    "DEFAULT_MIN_CONFIDENCE",
     "EN_MODEL",
     "EmbeddingSimilarityDetector",
     "JUDGE_SYSTEM_PROMPT",
@@ -59,11 +68,14 @@ __all__ = [
     "MODELS_HOME_ENV",
     "PRESIDIO_VERSION",
     "PresidioPiiDetector",
+    "RETRIEVAL_JUDGE_PROMPT",
+    "RETRIEVAL_PROMPT_VERSION",
     "SAMPLES_VERSION",
     "SUPPORTED_LANGUAGES",
     "SentenceEmbedder",
     "ZH_MODEL",
     "DetectorRegistry",
+    "IndirectInjectionDetector",
     "detect_language",
     "is_cjk_fragment",
     "is_surname_initial",

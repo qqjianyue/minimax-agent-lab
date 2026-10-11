@@ -143,15 +143,38 @@ class AuditSettings(BaseModel):
     retention_days: int = Field(default=365, ge=1)
 
 
+class RetrievalSettings(BaseModel):
+    """B8 检索配置（挂在 ``app`` 之下）。
+
+    默认**关闭**，但参考部署（``deploy/env.template``）显式打开。
+    两者不矛盾：代码默认值服务于"不给配置也能起得来"，而一条默认关着的
+    防线等于没有防线，所以部署模板里必须显式写出来。
+
+    环境变量：``MINIMAX_AGENT_APP__RETRIEVAL__ENABLED=true``、
+    ``MINIMAX_AGENT_APP__RETRIEVAL__TOP_K=2``（注意是 ``APP__`` 两级前缀）。
+
+    打开的代价是真实的：每个 ``/chat`` 请求多出"BM25 召回 + 每篇文档一次
+    RETRIEVAL 检测点"，其中检索 judge 是一次 LLM 调用。调 ``top_k`` 前先
+    算清楚额度和延迟预算。
+    """
+
+    enabled: bool = False
+    #: 每次请求检索的文档数。**每个数字都有代价**：每篇文档一次检索 judge
+    #: 的 LLM 调用。调大前先算清楚额度和延迟预算。
+    top_k: int = Field(default=3, ge=1, le=10)
+
+
 class AppSettings(BaseModel):
     """服务进程自身配置。"""
 
     env: str = "local"
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
-    log_level: str = "INFO"
+    log_level: str = Field(default="INFO")
     # ReAct 循环兜底步数，防止无限循环烧额度
     max_steps: int = Field(default=10, ge=1, le=100)
+    #: B8 检索（间接注入防御 FT-09）
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
 
 
 class Settings(BaseSettings):

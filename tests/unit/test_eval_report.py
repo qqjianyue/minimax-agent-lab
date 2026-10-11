@@ -118,9 +118,29 @@ class TestBuildReport:
             target_name="x", dataset=ds, mode="pipeline", verdicts=verdicts
         )
         cats = set(report.by_category)
-        assert {"direct_injection", "data_leak", "tool_abuse", "benign"} <= cats
-        # 间接注入是 disabled，不进 by_category（不计分）
-        assert "indirect_injection" not in cats
+        assert cats == {
+            "direct_injection",
+            "indirect_injection",
+            "data_leak",
+            "tool_abuse",
+            "benign",
+        }
+
+    def test_by_stage_separates_the_two_indirect_injection_paths(self) -> None:
+        """B8 起要能回答"是检索这条路漏了还是工具那条路漏了"。
+
+        ``indirect_injection`` 类别里的样本分落在 retrieval 与 tool 两个检测
+        点上；只按类别看会得到一个掩盖了"该修哪条信任边界"的混合数字。
+        """
+        ds = builtin_dataset()
+        verdicts = EvalRunner(_pipeline(StubDetector(name="never", results=None))).run(ds)
+        report = build_report(
+            target_name="x", dataset=ds, mode="pipeline", verdicts=verdicts
+        )
+        assert set(report.by_stage) == {"input", "retrieval", "tool"}
+        assert report.by_stage["retrieval"].confusion.total == 1  # ii-01
+        assert report.by_stage["tool"].confusion.total == 1  # ii-02
+        assert report.by_stage["input"].confusion.total == 16
 
     def test_disabled_cases_listed_but_not_counted(self) -> None:
         ds = builtin_dataset()
@@ -128,9 +148,13 @@ class TestBuildReport:
         report = build_report(
             target_name="x", dataset=ds, mode="pipeline", verdicts=verdicts
         )
-        assert report.enabled == 16
-        assert report.disabled == 2
-        assert [v.case_id for v in report.disabled_cases] == ["ii-01", "ii-02"]
+        assert report.enabled == 18
+        # 只剩多模态那条：全链路没有看图的检测点，承诺不了
+        assert report.disabled == 1
+        assert [v.case_id for v in report.disabled_cases] == ["ii-03"]
+        # disabled 占位 verdict 不进 by_stage
+        assert "retrieval" in report.by_stage  # ii-01 仍在
+        assert report.by_stage["retrieval"].confusion.total == 1
 
     def test_to_json_serializable(self) -> None:
         ds = builtin_dataset()

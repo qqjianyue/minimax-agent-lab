@@ -18,6 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from guard_contract.enums import GuardStage
+
 #: 期望动作：allow（放行）/ block（拦截）/ redact（脱敏后放行）。
 #: redact 在指标上算"拦截"（改变了数据流，PII 不会明文流出）。
 ALLOW = "allow"
@@ -48,8 +50,19 @@ class EvalCase(BaseModel):
     expected: str
     #: 说明（为什么这么标注 / 覆盖的绕过手法）
     note: str = ""
-    #: 是否参与本次跑分。False 表示"数据集已收录但当前架构还不能承诺拦截"
-    #: （如 B8 之前的间接注入），报告里单列、不计入 P/R/F1。
+    #: 该样本应在**哪个检测点**上跑（留空 = 用运行器的默认检测点，通常是 input）。
+    #:
+    #: **为什么需要它（B8）**：间接注入的载荷不在用户输入里，而在检索文档
+    #: （``retrieval``）或工具返回值（``tool``）里。用 input 检测点去跑它，
+    #: 判的其实是另一件事 —— 要么被输入侧的规则误打（假的高分），要么因为
+    #: 那里压根没有针对该检测点的检测器而必然放行（假的漏检）。两种都是
+    #: 在拿一个错的尺子量东西，指标会好看但没意义。
+    #:
+    #: 标注检测点让"在哪个信任边界上承诺了什么"变成数据的一部分，报告因此
+    #: 能回答"是检索这条路漏了，还是工具这条路漏了"。
+    stage: GuardStage | None = None
+    #: 是否参与本次跑分。False 表示"数据集已收录但当前架构还不能承诺拦截"，
+    #: 报告里单列、不计入 P/R/F1。
     enabled: bool = True
 
     @field_validator("id", "text", "category", "expected")
@@ -67,6 +80,11 @@ class EvalCase(BaseModel):
                 f"非法的期望动作 {value!r}，可选值: {sorted(EXPECTED_VALUES)}"
             )
         return value
+
+    @property
+    def expected_intercept(self) -> bool:
+        """期望动作是否算"拦截"：allow 放行，block/redact 均拦截。"""
+        return self.expected != ALLOW
 
 
 class EvalDataset(BaseModel):

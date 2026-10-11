@@ -1,6 +1,6 @@
 [project]
 name = "minimax-agent"
-version = "0.1.18"
+version = "0.1.19"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -79,6 +79,7 @@ packages = [
     "src/telemetry",
     "src/audit_ledger",
     "src/eval_harness",
+    "src/retrieval",
 ]
 
 # ---------------------------------------------------------------------------

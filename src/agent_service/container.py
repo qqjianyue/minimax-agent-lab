@@ -25,6 +25,7 @@ from audit_ledger import AuditLedger, JsonlAuditSink, SystemClockAdapter
 from detector_ml import (
     DetectorRegistry,
     EmbeddingSimilarityDetector,
+    IndirectInjectionDetector,
     LLMJudgeDetector,
     PresidioPiiDetector,
     SentenceEmbedder,
@@ -32,12 +33,14 @@ from detector_ml import (
 from detector_rules.detector import RulesL1Detector
 from detector_rules.redactor import RegexRedactor
 from guard_contract.default_policy import load_default_policy, load_policy_set
+from guard_contract.enums import GuardStage
 from guard_contract.policy_schema import GuardSettings, PolicySet
 from llm_minimax.client import MinimaxLLM
 from orchestrator import build_orchestrator_graph
 from policy_engine.engine import PolicyEngine
 from policy_engine.pipeline import GuardPipeline
 from policy_engine.redactor import Redactor
+from retrieval import build_default_kb
 from telemetry import Instrumentation, build_telemetry
 
 logger = logging.getLogger("agent_service")
@@ -121,6 +124,15 @@ def _build_ml_detector_layers(
         logger.warning("skip L3 injection.embedding: %s", exc)
     if settings.llm.api_key.get_secret_value():
         layers.append(("l4", LLMJudgeDetector(llm, model=settings.llm.model)))
+        # B8：检索文档的间接注入判定。**判据与 L4 不同**（"有害吗" vs
+        # "是否在对 AI 下指令"），所以独立成检测器而不是给 L4 加个阶段 ——
+        # 混在一起会让 version/阈值语义混乱，审计说不清判定来自谁。
+        layers.append(
+            (
+                "retrieval",
+                IndirectInjectionDetector(llm, model=settings.llm.model),
+            )
+        )
     else:
         logger.warning("skip L4 llm.judge: LLM 未配置")
     return layers
@@ -172,7 +184,18 @@ def build_container(
             layers.extend(_build_ml_detector_layers(resolved_llm, resolved_settings))
         registry = DetectorRegistry(layers)
         resolved_detectors = list(registry.detectors)
-        pipeline = GuardPipeline(engine, resolved_detectors, short_circuit=True)  # type: ignore[arg-type]
+        # B8 起按阶段配置短路：**RETRIEVAL 跑满全部检测层**。
+        # 实测理由：检索点上 L1 正则的低分命中会把 L3/L4 整层挡掉，于是
+        # 最严重的判定拿不到发言权 —— "忽略以上所有指令"只判到 escalate，
+        # 而语义型攻击因 L1 无命中落到 embedding 上直接放行。检索文档很短，
+        # 那一层跑满的代价可以接受。其余阶段维持 B5 行为。
+        pipeline = GuardPipeline(
+            engine,
+            resolved_detectors,
+            short_circuit=frozenset(
+                {GuardStage.INPUT, GuardStage.OUTPUT, GuardStage.TOOL}
+            ),
+        )  # type: ignore[arg-type]
 
     resolved_redactor = redactor if redactor is not None else RegexRedactor()
 
@@ -233,6 +256,11 @@ def build_container(
         system_prompt=system_prompt or SYSTEM_PROMPT,
         model=resolved_settings.llm.model,
         max_steps=resolved_settings.app.max_steps,
+        # B8 检索（默认关闭，见 RetrievalSettings 的说明）
+        retriever=(
+            build_default_kb() if resolved_settings.app.retrieval.enabled else None
+        ),
+        top_k=resolved_settings.app.retrieval.top_k,
     )
 
     return AppContainer(

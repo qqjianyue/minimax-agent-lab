@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from agent_core.ports import LLMMessage, TokenUsage, ToolCall
+from agent_core.ports import LLMMessage, RetrievalDocument, TokenUsage, ToolCall
 from policy_engine.decision import Decision
 
 
@@ -40,6 +40,20 @@ class OrchestratorState(TypedDict, total=False):
     guarded_input: str
     input_decision: Decision
     output_decision: Decision
+    #: B8 检索命中的参考文档（按相关度，RETRIEVAL 检测点处理后的结果）
+    retrieved: list[RetrievalDocument]
+    #: 每篇检索文档的 RETRIEVAL 决策，审计要能回答"哪篇文档被判了什么"
+    retrieval_decisions: list[Decision]
+    #: 检索内容里被判出注入、但因**内部可信**而未拦截的文档 id。
+    #: 刻意单独记一份：内部知识库同样可能被投毒，这些是"看见但放过"的痕迹。
+    retrieval_flagged: list[str]
+    #: 被**隔离**出上下文的外部文档（doc_id → 判定理由）。
+    #:
+    #: B8.7 实测逼出来的处置：命中注入的外部文档是**剔掉它**，不是掐掉整条
+    #: 请求。实测"任一外部命中即拦"会连带误杀 45% 的正常业务提问 ——
+    #: 攻击者只要让自己的文档在某个高频话题上排进 top_k，那一类问题就对
+    #: 所有客户不可用了。内容注入会退化成一个拒绝服务原语。
+    retrieval_quarantined: dict[str, str]
     #: 发给 LLM 的完整消息历史（system / user / assistant / tool）
     messages: list[LLMMessage]
     #: 待执行的工具调用队列（LLMResponse.tool_calls → 状态；LLMMessage 不承载）

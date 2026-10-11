@@ -21,16 +21,36 @@ from eval_harness.dataset import (
     builtin_dataset,
     load_dataset,
 )
+from guard_contract.enums import GuardStage
 
 
 class TestBuiltinDataset:
     def test_loads_and_has_expected_shape(self) -> None:
         ds = builtin_dataset()
         assert ds.name == "redteam-v1"
-        # 四类攻击 + 良性，共 18 条；间接注入 2 条当前 disabled（B8 前不计分）
-        assert len(ds.cases) == 18
-        assert len(ds.enabled_cases) == 16
-        assert len(ds.disabled_cases) == 2
+        # 四类攻击 + 良性，共 19 条。B8 起间接注入的 2 条文本样本已解锁，
+        # 剩下 1 条 disabled 是多模态注入（全链路没有看图的检测点，收录但
+        # 不承诺拦截 —— 见 redteam.json 的 note）
+        assert len(ds.cases) == 19
+        assert len(ds.enabled_cases) == 18
+        assert len(ds.disabled_cases) == 1
+
+    def test_indirect_injection_cases_declare_their_stage(self) -> None:
+        """间接注入的载荷不在用户输入里 —— 必须标注自己所在的检测点。
+
+        拿 input 去跑 ii-01/ii-02 判的其实是另一件事：要么被输入侧规则误打，
+        要么因为那里没有对应检测器而必然放行。两种都拿错了尺子。
+        """
+        ds = builtin_dataset()
+        stages = {c.id: c.stage for c in ds.cases if c.category == CATEGORY_INDIRECT_INJECTION}
+        assert stages["ii-01"] == GuardStage.RETRIEVAL
+        assert stages["ii-02"] == GuardStage.TOOL
+
+    def test_only_uncovered_indirect_injection_stays_disabled(self) -> None:
+        """不能兑现的承诺不能解锁 —— 多模态那条必须留在 disabled。"""
+        ds = builtin_dataset()
+        disabled = {c.id for c in ds.disabled_cases}
+        assert disabled == {"ii-03"}
 
     def test_covers_all_four_attack_categories_plus_benign(self) -> None:
         ds = builtin_dataset()

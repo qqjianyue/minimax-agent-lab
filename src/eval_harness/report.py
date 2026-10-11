@@ -8,8 +8,12 @@
    漏检明细同理（FN 是合规风险，逐条可追）。
 
 ``disabled`` 样本单独列出但**不计入指标**：数据集收录了但当前架构还不能
-承诺拦截（如 B8 之前的间接注入），报告里保留存在感但不污染指标 ——
-这正是"测试集覆盖四类，但承诺按能力解锁"的工程化表达。
+承诺拦截（如多模态注入 —— 本项目没有任何看图的检测点），报告里保留存在感
+但不污染指标 —— 这正是"测试集覆盖四类，但承诺按能力解锁"的工程化表达。
+
+指标给两层拆分：按**类别**（哪类攻击不行）与按**检测点**（哪条信任边界漏了）。
+B8 起后者才真正有意义 —— 间接注入的样本分散在 retrieval 与 tool 两个检测
+点上，只看类别会得到一个掩盖了"该修哪条路"的混合数字。
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +50,13 @@ class EvaluationReport:
     false_negatives: tuple[CaseVerdict, ...] = ()
     disabled_cases: tuple[CaseVerdict, ...] = ()
     threshold_scan: tuple[dict[str, float | int], ...] = ()
+    #: 按**检测点**（input / retrieval / tool / output）拆分的指标（B8）。
+    #::
+    #: 为什么分类之外还要这一层：``indirect_injection`` 这个类别里的样本
+    #: 分别落在 retrieval 与 tool 两个检测点上，而"检索这条路漏了"和"工具
+    #: 那条路漏了"是完全不同的两个待办。只按 category 看会得到一个漂亮的
+    #: 混合数字，看不出该去修哪条信任边界。
+    by_stage: dict[str, ClassificationMetrics] = dataclass_field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +68,9 @@ class EvaluationReport:
             "overall": self.overall.to_dict(),
             "by_category": {
                 cat: m.to_dict() for cat, m in sorted(self.by_category.items())
+            },
+            "by_stage": {
+                stage: m.to_dict() for stage, m in sorted(self.by_stage.items())
             },
             "latency_ms": {
                 "mean": round(self.latency_ms_mean, 1),
@@ -104,6 +119,15 @@ def build_report(
             [c.expected_intercept for c in cases], [c.intercepted for c in cases]
         )
 
+    by_stage: dict[str, ClassificationMetrics] = {}
+    stage_groups: dict[str, list[CaseVerdict]] = defaultdict(list)
+    for v in verdicts:
+        stage_groups[v.stage].append(v)
+    for stage, cases in stage_groups.items():
+        by_stage[stage] = compute_metrics(
+            [c.expected_intercept for c in cases], [c.intercepted for c in cases]
+        )
+
     latencies = [v.latency_ms for v in verdicts]
     fps = tuple(v for v in verdicts if not v.expected_intercept and v.intercepted)
     fns = tuple(v for v in verdicts if v.expected_intercept and not v.intercepted)
@@ -127,6 +151,7 @@ def build_report(
         false_negatives=fns,
         disabled_cases=disabled,
         threshold_scan=tuple(threshold_scan or ()),
+        by_stage=by_stage,
     )
 
 
@@ -167,6 +192,12 @@ def render_report(report: EvaluationReport) -> str:
         m = report.by_category[cat]
         lines.append(
             f"[eval]    {cat:<20} P={m.precision:.3f} R={m.recall:.3f} "
+            f"F1={m.f1:.3f} (n={m.confusion.total})"
+        )
+    for stage in sorted(report.by_stage):
+        m = report.by_stage[stage]
+        lines.append(
+            f"[eval]    @{stage:<19} P={m.precision:.3f} R={m.recall:.3f} "
             f"F1={m.f1:.3f} (n={m.confusion.total})"
         )
     lines.append(

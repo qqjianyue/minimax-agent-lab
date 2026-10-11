@@ -269,8 +269,24 @@ class TestApprovalPath:
 
 
 class TestGraphShape:
-    def test_no_retrieve_node_in_b6(self) -> None:
-        """B6 切片：retrieve 是 B8 RAG 占位，图里不应有检索节点。"""
+    def test_retrieve_node_exists_and_runs_between_guards(self) -> None:
+        """B8 起 retrieve 节点进图，位置在 input_guard 与 llm_plan 之间。
+
+        这条断言原来写的是反的（"B6 不应有 retrieve"）。**注意它锁的是拓扑
+        而不只是存在性**：检索必须发生在输入检测之后（用户输入没过 guard
+        就不该消耗检索）、且在首次模型调用之前（否则内容已经进了上下文，
+        再检测就晚了）。
+        """
         graph = _empty_graph()
-        assert "retrieve" not in getattr(graph, "nodes", {})
+        nodes = set(getattr(graph, "nodes", {}))
+        assert {"input_guard", "retrieve", "llm_plan"} <= nodes
+
+    def test_retrieve_is_a_noop_without_a_retriever(self) -> None:
+        """不注入 retriever 时该节点必须完全空操作 —— 不装配检索组件的
+        部署（B6/B7 形态）行为不能变。"""
+        llm = FakeLLM(responses=[make_response("正常回答")])
+        state = _run(_bank_graph(llm), message="定期存款利率多少")
+        assert state["response"] == "正常回答"
+        assert state.get("retrieved", []) == [], "没有检索器就不该凭空出现检索结果"
+        assert state.get("retrieval_decisions", []) == []
 

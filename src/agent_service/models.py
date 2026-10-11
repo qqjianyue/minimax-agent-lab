@@ -77,6 +77,10 @@ class HealthResponse(BaseModel):
     policy: dict[str, Any]
     detectors: list[str]
     llm_configured: bool
+    #: 检索（间接注入防御 FT-09）是否开启。B8 起它是**可关的**，
+    #: 所以必须从 healthz 可见 —— 一条没开的防线，在探测上应当和
+    #: 一条跑不通的防线长得不一样。
+    retrieval: dict[str, Any]
 
 
 class DecisionModel(BaseModel):
@@ -114,12 +118,31 @@ class ToolCallResult(BaseModel):
 
     与 ``/tools/execute`` 的 ``ToolExecuteResponse`` 互补：后者是单次
     调用的完整契约（含 guard 决策），这里是编排一轮对话里实际执行过的
-    工具清单（轻量摘要，不含决策明细 —— 明细进审计账本）。
+    工具清单（轻量摘要、不含决策明细 —— 明细进审计账本）。
     """
 
     name: str
     status: str
     output: str
+
+
+class RetrievalSummary(BaseModel):
+    """检索环节的处置结果（B8，进 /chat 响应）。
+
+    **为什么要把它暴露出来**：FT-09 的验收标准是"投毒文档进不了上下文"，
+    而这件事在响应里本来不可见 —— 客户看到的是一段正常回答，从结果上区分
+    不出"参考资料被隔离过"和"根本没检索到"。没有这个字段，这条用例就只能
+    写成"断言响应里没有那句话"，那是间接证据，而且会被模型措辞变化打穿。
+    """
+
+    #: 召回到的文档数（未过检测点）
+    recalled: int
+    #: 实际进入上下文的文档 id
+    used: list[str]
+    #: 被隔离出上下文的文档 id（命中注入的外部文档）
+    quarantined: list[str]
+    #: 命中但因内部可信而放过的文档 id（"看见但放过"的痕迹）
+    flagged: list[str]
 
 
 class ChatResponse(BaseModel):
@@ -141,6 +164,8 @@ class ChatResponse(BaseModel):
     steps: int = 0
     #: B6 C7：是否出现需人工审批/被拦的工具调用（HITL 语义）
     interrupted: bool = False
+    #: B8：检索环节的处置结果（召回了什么、用了什么、隔离了什么）
+    retrieval: RetrievalSummary | None = None
 
 
 class ToolExecuteResponse(BaseModel):
@@ -164,6 +189,7 @@ __all__ = [
     "GuardInspectRequest",
     "GuardInspectResponse",
     "HealthResponse",
+    "RetrievalSummary",
     "ToolCallResult",
     "ToolExecuteRequest",
     "ToolExecuteResponse",

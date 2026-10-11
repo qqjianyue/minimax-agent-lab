@@ -105,19 +105,38 @@ class TestEndToEndPipelineRun:
         }
         # 攻击全拦 → recall=1，但 precision 被 FP 拉低
         assert report.overall.recall == 1.0
-        assert report.overall.precision == pytest.approx(10 / 16)
+        assert report.overall.precision == pytest.approx(12 / 18)
 
-    def test_indirect_injection_excluded_from_metrics(self) -> None:
-        """disabled 样本（B8 前的间接注入）不进指标，但报告保留存在感。"""
+    def test_uncovered_indirect_injection_excluded_from_metrics(self) -> None:
+        """disabled 样本（多模态注入）不进指标，但报告保留存在感。
+
+        B8 起 ii-01/ii-02 已解锁进指标；只有全链路没有能力覆盖的那条
+        留在 disabled —— 「不能兑现的承诺不写进数据集的 enabled」。
+        """
         ds = builtin_dataset()
         runner = EvalRunner(_pipeline(StubDetector(name="never", results=None)))
         report = build_report(
             target_name="never", dataset=ds, mode=runner.mode, verdicts=runner.run(ds)
         )
-        assert report.enabled == 16
-        assert report.disabled == 2
-        assert "indirect_injection" not in report.by_category
-        assert [v.case_id for v in report.disabled_cases] == ["ii-01", "ii-02"]
+        assert report.enabled == 18
+        assert report.disabled == 1
+        assert "indirect_injection" in report.by_category
+        assert [v.case_id for v in report.disabled_cases] == ["ii-03"]
+
+    def test_indirect_injection_cases_run_on_their_own_stage(self) -> None:
+        """ii-01 走 retrieval、ii-02 走 tool —— 不能都塞进 input。
+
+        用 input 去跑它们等于换了一把尺子：要么被输入侧规则误打成高分，
+        要么因为那个检测点上没有对应检测器而必然放行。两种都让指标失真。
+        """
+        ds = builtin_dataset()
+        runner = EvalRunner(_pipeline(StubDetector(name="rec", results=None)))
+        verdicts = runner.run(ds)
+        stages = {v.case_id: v.stage for v in verdicts}
+        assert stages["ii-01"] == "retrieval"
+        assert stages["ii-02"] == "tool"
+        # 其余样本仍落在运行器默认的 input
+        assert {v.stage for v in verdicts if v.case_id.startswith("bg-")} == {"input"}
 
 
 class TestThresholdCalibrationFlow:

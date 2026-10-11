@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,63 @@ class LLMResponse:
 # ---------------------------------------------------------------------------
 
 
+class TrustLevel(Enum):
+    """参考文档的信任等级（B8 信任边界）。"""
+
+    #: 本行自建知识库。命中注入规则只打标记、不拦截 —— 内部文档常合法地
+    #: **讨论**注入攻击（例如安全公告里引用攻击话术）。
+    TRUSTED_INTERNAL = "trusted_internal"
+    #: 用户上传、第三方 API 等外部来源。命中即拦截。
+    UNTRUSTED_EXTERNAL = "untrusted_external"
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalDocument:
+    """一条被检索出来的参考文档。
+
+    **它不是可信输入。** 检索文档会被拼进 LLM 上下文，因此**携带指令的文档
+    构成间接注入**（B8 关卡 0 实测：纯正则扫描对这类文档误报 50%、检出
+    仅 25%）。所以 ``trust`` 不是装饰字段，而是安全决策的一等输入：
+
+    - ``TRUSTED_INTERNAL`` —— 本行自建知识库。内容里出现注入话术通常是在
+      **描述/防范**这类攻击（实测《防范提示词注入安全公告》会被 L1 正则
+      直接 block），所以命中只打标记、不拦截。
+    - ``UNTRUSTED_EXTERNAL`` —— 用户上传、第三方 API。命中即拦截。
+
+    信任边界的**固有代价**必须说清楚：内部库同样可能被投毒。所以 ``trust``
+    只降低误报，不提供"内部文档一定安全"的保证 —— 真正的兜底是检索内容
+    的不可信标记与输出侧复检。
+    """
+
+    doc_id: str
+    title: str
+    content: str
+    trust: TrustLevel = TrustLevel.TRUSTED_INTERNAL
+    #: 来源标识，审计要能回答"这条内容从哪来"
+    source: str = "kb"
+
+    def __post_init__(self) -> None:
+        if not self.doc_id:
+            raise ValueError("doc_id 不能为空")
+
+
+@runtime_checkable
+class RetrieverPort(Protocol):
+    """知识检索端口（B8）。
+
+    实现方：生产用 :class:`retrieval.store.InMemoryKnowledgeBase`（内存
+    关键词检索，无重依赖、可离线测）；测试注入 Fake。
+    """
+
+    name: str
+
+    def search(self, query: str, *, top_k: int = 3) -> tuple[RetrievalDocument, ...]:
+        """按相关度返回前 ``top_k`` 条。**永远不要抛异常**，检索失败应当
+        表现为空结果 —— 抛错会被编排当成不可恢复故障，而"没检索到"是可
+        降级的正常状态。"""
+        ...
+
+
 @runtime_checkable
 class LLMPort(Protocol):
     """大模型后端端口。
@@ -205,9 +263,12 @@ __all__ = [
     "LLMPort",
     "LLMRequest",
     "LLMResponse",
+    "RetrievalDocument",
+    "RetrieverPort",
     "SpanPort",
     "TelemetryPort",
     "TokenUsage",
     "ToolCall",
     "ToolSpec",
+    "TrustLevel",
 ]
