@@ -75,6 +75,14 @@ class TestParseDirective:
 # --- 检测器契约 ---------------------------------------------------------------
 
 
+def test_content_injection_judges_exposes_the_detector_name() -> None:
+    """按调用点排除时靠 name 匹配 —— 名字变了这里的排除会静默失效。"""
+    from detector_ml import CONTENT_INJECTION_JUDGES
+
+    assert frozenset({IndirectInjectionDetector.name}) == CONTENT_INJECTION_JUDGES
+    assert frozenset({"indirect_injection.judge"}) == CONTENT_INJECTION_JUDGES
+
+
 class TestIndirectInjectionDetector:
     def test_supports_retrieval_and_tool_but_not_input(self) -> None:
         """检索文档与工具返回值共用"对 AI 下指令"这一个判据，两个检测点都上。

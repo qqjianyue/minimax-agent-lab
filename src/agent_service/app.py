@@ -62,6 +62,7 @@ from agent_service.models import (
     ToolExecuteResponse,
     VersionModel,
 )
+from detector_ml import CONTENT_INJECTION_JUDGES
 from guard_contract.enums import GuardStage, PolicyAction
 from policy_engine.decision import Decision
 
@@ -227,6 +228,11 @@ def create_app(container: AppContainer) -> FastAPI:
                 text=guard_text,
                 request_id=request_id,
                 metadata={"endpoint": "/tools/execute", "tool": payload.tool},
+                # 参数是结构化调用元数据，不是不可信内容。内容型 judge 挂在
+                # 这里会把 `delete_customer_records: {...}` 间歇性判成指令，
+                # 让 FT-07 从 requires_approval 翻成 blocked（v0.1.19 首次
+                # 部署时被 L3 逮到）。详见 GuardPipeline._short_circuits。
+                skip_detectors=CONTENT_INJECTION_JUDGES,
             )
             decision_model = DecisionModel.from_decision(decision)
 
@@ -366,6 +372,7 @@ def _run_guarded(
     text: str,
     request_id: str | None,
     metadata: dict[str, Any] | None = None,
+    skip_detectors: frozenset[str] = frozenset(),
 ) -> tuple[Decision, float]:
     """跑一个检测点，同时写出审计记录与 span。
 
@@ -384,7 +391,9 @@ def _run_guarded(
     """
     with _guard_span(container, span_name, stage) as recorder:
         started = time.perf_counter()
-        decision = container.pipeline.run(text, stage=stage, request_id=request_id)
+        decision = container.pipeline.run(
+            text, stage=stage, request_id=request_id, skip_detectors=skip_detectors
+        )
         latency_ms = (time.perf_counter() - started) * 1000.0
         recorder.record(decision, latency_ms=latency_ms)
     _audit(container, decision, metadata=metadata)

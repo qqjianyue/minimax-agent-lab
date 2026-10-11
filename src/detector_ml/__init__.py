@@ -25,6 +25,7 @@ from detector_ml.embedding_similarity import (
     EmbeddingSimilarityDetector,
 )
 from detector_ml.indirect_injection import (
+    CONTENT_INJECTION_JUDGES,
     DEFAULT_MIN_CONFIDENCE,
     RETRIEVAL_JUDGE_PROMPT,
     IndirectInjectionDetector,
@@ -53,6 +54,7 @@ from detector_ml.timeout import run_detector_with_timeout
 
 __all__ = [
     "ATTACK_SAMPLES",
+    "CONTENT_INJECTION_JUDGES",
     "DEFAULT_MODEL_NAME",
     "DEFAULT_THRESHOLD",
     "DEFAULT_MIN_CONFIDENCE",

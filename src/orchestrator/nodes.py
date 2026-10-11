@@ -26,6 +26,7 @@ from typing import Any
 from agent_core.ports import LLMMessage, LLMRequest, LLMResponse, RetrievalDocument, TrustLevel
 from agent_tools.executor import ToolExecutor
 from agent_tools.registry import ToolRegistry
+from detector_ml import CONTENT_INJECTION_JUDGES
 from guard_contract.enums import GuardStage, PolicyAction
 from orchestrator.state import OrchestratorState
 from policy_engine.actions import apply_action
@@ -81,6 +82,7 @@ class GuardRunner:
         span_name: str,
         metadata: dict[str, object] | None = None,
         short_circuit: bool | None = None,
+        skip_detectors: frozenset[str] = frozenset(),
     ) -> Decision:
         """跑检测点：pipeline 判定 + 审计 + （有埋点时）span 与耗时记录。
 
@@ -88,17 +90,26 @@ class GuardRunner:
         short_circuit: 本次调用的短路覆盖（见
             :meth:`policy_engine.pipeline.GuardPipeline._short_circuits`）。
             ``None`` 表示沿用容器的阶段配置。
+        skip_detectors: 本次调用显式排除的检测器（按 name），同上。
         """
         inst = self._instrumentation
         if inst is None:
             decision = self._pipeline.run(
-                text, stage=stage, request_id=request_id, short_circuit=short_circuit
+                text,
+                stage=stage,
+                request_id=request_id,
+                short_circuit=short_circuit,
+                skip_detectors=skip_detectors,
             )
         else:
             with inst.guard(span_name, stage) as recorder:
                 started = time.perf_counter()
                 decision = self._pipeline.run(
-                    text, stage=stage, request_id=request_id, short_circuit=short_circuit
+                    text,
+                    stage=stage,
+                    request_id=request_id,
+                    short_circuit=short_circuit,
+                    skip_detectors=skip_detectors,
                 )
                 recorder.record(decision, latency_ms=(time.perf_counter() - started) * 1000.0)
         self._audit(decision, metadata=metadata)
@@ -373,6 +384,11 @@ def tool_loop_node(
             request_id=state["request_id"],
             span_name="tool_guard",
             metadata={"endpoint": "/chat", "tool": tc.name},
+            # 参数是**结构化调用元数据**，不是不可信内容：语义判定由 L1 危险
+            # 工具规则与 executor 安全链负责。内容型 judge 挂在这里会把
+            # `delete_customer_records: {...}` 间歇性判成指令（见
+            # GuardPipeline._short_circuits 里的 FT-07 实测）。
+            skip_detectors=CONTENT_INJECTION_JUDGES,
         )
         if decision.action is not PolicyAction.ALLOW:
             blocked = decision.action is PolicyAction.BLOCK

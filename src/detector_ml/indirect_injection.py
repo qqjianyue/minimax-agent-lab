@@ -258,9 +258,22 @@ class IndirectInjectionDetector:
 
 
 __all__ = [
+    "CONTENT_INJECTION_JUDGES",
     "DEFAULT_MIN_CONFIDENCE",
     "PROMPT_VERSION",
     "RETRIEVAL_JUDGE_PROMPT",
     "IndirectInjectionDetector",
     "parse_directive",
 ]
+
+#: 判定"不可信**内容**里是否在对 AI 下指令"的那一类检测器。
+#:
+#: 调用方在**同一个检测点上语义不同**的检查之间划线时用它 —— 目前只有一处：
+#: ``TOOL`` 阶段的工具**参数**检测点要排除它。参数是结构化调用元数据，语义
+#: 判定由 L1 危险工具规则与 executor 安全链负责；实测把内容 judge 挂在参数上
+#: 会让 ``delete_customer_records: {"confirm": true}`` 被间歇性判成指令，
+#: FT-07 从 ``requires_approval`` 翻成 ``blocked``（详见
+#: :meth:`policy_engine.pipeline.GuardPipeline._short_circuits`）。
+CONTENT_INJECTION_JUDGES: frozenset[str] = frozenset(
+    {IndirectInjectionDetector.name}
+)

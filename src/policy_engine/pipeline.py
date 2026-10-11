@@ -90,6 +90,17 @@ class GuardPipeline:
         0.45 又够不上 ``escalate_borderline`` 的 0.60，**结果整体放行**。
         同一阶段开关短路就修不了它（要么参数侧也被迫跑满、丢掉 B5 的延迟预算，
         要么返回值侧漏检），所以短路策略下沉到调用点。
+
+        **同一原因还需要按调用点排除检测器**：短路只解决"跑不跑"，解决不了
+        "该不该由这个检测器来判"。实测（FT-07 在 v0.1.19 首次部署时被 L3 逮到）：
+        把内容型 judge 挂上 ``TOOL`` 之后，它会在**工具参数**检测点上跑起来，
+        而 ``delete_customer_records: {"confirm": true}`` 是结构化调用元数据，
+        不是在对 AI 下指令 —— 但模型偶尔（temperature=0 也一样）会把它读成指令，
+        给出 0.9+ 的分数，于是 ``block_critical_injection``(priority 10) 压过
+        ``escalate_dangerous_tool``(20)，FT-07 从 ``requires_approval`` 变成
+        ``blocked``，而且是间歇性的。参数侧的语义判定本来就由 L1 危险工具规则
+        与 executor 安全链负责，多跑这一次 LLM 调用既费钱又引入误判。
+        所以参数侧用 ``skip_detectors`` 显式排除内容型 judge，返回值侧跑满。
         """
         if override is not None:
             return override
@@ -97,10 +108,14 @@ class GuardPipeline:
             return self._short_circuit
         return stage in self._short_circuit
 
-    def _applicable(self, stage: GuardStage) -> list[DetectorPort]:
+    def _applicable(
+        self, stage: GuardStage, skip_detectors: frozenset[str]
+    ) -> list[DetectorPort]:
         out: list[DetectorPort] = []
         for detector in self._detectors:
             if self._enabled is not None and detector.name not in self._enabled:
+                continue
+            if detector.name in skip_detectors:
                 continue
             if stage not in detector.supported_stages:
                 continue
@@ -114,6 +129,7 @@ class GuardPipeline:
         stage: GuardStage,
         request_id: str | None = None,
         short_circuit: bool | None = None,
+        skip_detectors: frozenset[str] = frozenset(),
     ) -> Decision:
         """执行检测并求值。
 
@@ -123,6 +139,9 @@ class GuardPipeline:
         request_id: 关联请求标识；不传则自动生成。
         short_circuit: 本次调用的短路覆盖（见 :meth:`_short_circuits`）。
             ``None`` 表示沿用构造期配置。
+        skip_detectors: 本次调用**显式排除**的检测器（按 name）。
+            用于同一个检测点上内容语义不同的两种检查 —— 见
+            :meth:`_short_circuits` 里关于 TOOL 阶段的说明。
 
         Returns:
             策略决策。**检测器自身抛出的异常不会向外传播** —— 异常已被转成
@@ -132,7 +151,7 @@ class GuardPipeline:
         rid = request_id or f"req-{uuid4().hex[:12]}"
         results: list[DetectorResult] = []
         failures: list[DetectorFailure] = []
-        applicable = self._applicable(stage)
+        applicable = self._applicable(stage, skip_detectors)
         attempted: list[str] = []
         short_circuit_on = self._short_circuits(stage, short_circuit)
 

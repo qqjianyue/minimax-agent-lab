@@ -386,6 +386,30 @@ class TestPerStageShortCircuit:
         self.build([l1, l2], False).run("x", stage=GuardStage.INPUT, short_circuit=True)
         assert l2.call_count == 0
 
+    def test_skip_detectors_excludes_one_layer_for_one_call(self) -> None:
+        """FT-07 的回归：参数侧排除内容 judge，返回值侧仍跑满。
+
+        实测（v0.1.19 首次部署被 L3 逮到）：内容 judge 挂在 TOOL 参数检测点上
+        会把 ``delete_customer_records: {"confirm": true}`` 间歇性判成指令，
+        score 过了 0.90 于是 ``block_critical_injection`` 压过
+        ``escalate_dangerous_tool``，FT-07 从 requires_approval 变 blocked。
+        """
+        l1 = StubDetector(
+            name="rules.l1",
+            results=(make_result(detector="rules.l1", label="prompt_injection", score=0.99),),
+        )
+        judge = StubDetector(name="indirect_injection.judge")
+        pipeline = self.build([l1, judge], frozenset({GuardStage.TOOL}))
+
+        pipeline.run(
+            "delete_customer_records", stage=GuardStage.TOOL,
+            skip_detectors=frozenset({"indirect_injection.judge"}),
+        )
+        assert judge.call_count == 0
+
+        pipeline.run("工具返回值", stage=GuardStage.TOOL, short_circuit=False)
+        assert judge.call_count == 1
+
 
 # --- 审计 -------------------------------------------------------------------
 class TestAuditTrail:

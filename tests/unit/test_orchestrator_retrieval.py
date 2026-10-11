@@ -435,6 +435,47 @@ def _run_tool_loop_with_short_circuit_detector(output: str) -> dict:
     return tool_loop_node(_tool_state(), executor=ToolExecutor(tools), runner=runner)
 
 
+def test_tool_arguments_skip_the_content_judge() -> None:
+    """**FT-07 的回归**：参数检测点排除内容 judge，返回值检测点不排除。
+
+    参数是结构化调用元数据（``get_product_rate: {...}``），不是不可信内容；
+    让内容 judge 去判它既费一次 LLM 调用，又会间歇性把工具名读成指令。
+    同一个 TOOL 阶段上的两种检查，处置必须不一样。
+    """
+    from agent_tools.executor import ToolExecutor
+    from agent_tools.registry import ToolRegistry
+    from detector_ml import CONTENT_INJECTION_JUDGES
+    from orchestrator.nodes import tool_loop_node
+
+    class _CountingJudge:
+        name = "indirect_injection.judge"
+        supported_stages = frozenset({GuardStage.TOOL})
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def detect(self, text: str, *, stage: GuardStage) -> tuple[DetectorResult, ...]:
+            self.call_count += 1
+            return ()
+
+    judge = _CountingJudge()
+    pipeline = GuardPipeline(
+        PolicyEngine(load_default_policy()), [judge], short_circuit=False
+    )
+    runner = GuardRunner(
+        pipeline, redactor=RegexRedactor(), ledger=None, instrumentation=None
+    )
+    tools = ToolRegistry([_poisoned_tool("正常返回值")])
+    tool_loop_node(
+        _tool_state(), executor=ToolExecutor(tools), runner=runner
+    )
+
+    assert judge.call_count == 1, (
+        "只应在返回值检测点跑一次：参数检测点必须按 CONTENT_INJECTION_JUDGES "
+        f"排除它（排除名单={sorted(CONTENT_INJECTION_JUDGES)}）"
+    )
+
+
 _TOOL_CALL = ToolCall(
     id="call-1", name="get_product_rate", arguments={"product_type": "deposit"}
 )
