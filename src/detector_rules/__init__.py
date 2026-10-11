@@ -26,6 +26,8 @@ from detector_rules.pii import (
     PII_RULES,
     is_luhn_valid,
     is_valid_cn_id,
+    is_valid_cn_mobile,
+    strip_separators,
 )
 
 __all__ = [
@@ -44,4 +46,6 @@ __all__ = [
     "build_l1_rule_set",
     "is_luhn_valid",
     "is_valid_cn_id",
+    "is_valid_cn_mobile",
+    "strip_separators",
 ]

@@ -141,7 +141,7 @@ cost = (prompt − cache_read) × 输入单价
 |---|---|---|
 | 凭据 | `api_key` / `authorization` / `password` / `secret` / `token` / `llm.api_key` | **直接丢弃**，连键名都不留 |
 | 原文 | `prompt` / `input.text` / `output.text` / `messages` / `system_prompt` / `user_message` / `retrieved_documents` / `tool.arguments` / `tool.output` | 保留键名，内容替换为占位符 |
-| PII | 任意字符串值 | 经 `RegexRedactor` 脱敏（身份证 / 手机号 / 银行卡，带校验位） |
+| PII | 任意字符串值 | 经 `RegexRedactor` 脱敏（身份证 / 手机号 / 银行卡；身份证过校验位、银行卡过 Luhn、手机号过位数与号段形态判定，三者都容忍 `-` / 空格 / `_` 分段写法） |
 
 规则**递归**到嵌套的 dict / list，顶层与嵌套共用同一套键名规则。
 

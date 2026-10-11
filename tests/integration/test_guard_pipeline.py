@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from detector_rules import RulesL1Detector
+from detector_rules import L1_RULES_VERSION, RulesL1Detector
 from guard_contract.default_policy import load_default_policy
 from guard_contract.enums import FailMode, GuardStage, PolicyAction
 from guard_contract.policy_schema import GuardSettings
@@ -419,7 +419,9 @@ class TestAuditTrail:
         json.dumps(record, ensure_ascii=False)
         assert record["action"] == "block"
         assert record["detector_results"][0]["detector"] == "rules.l1"
-        assert record["detector_results"][0]["version"] == "1.0.0"
+        # 规则集版本必须跟着规则改动走。钉字面量会在每次 bump 时变成一句
+        # "顺手改一下"的噪音，于是版本号就不再承担"审计可追溯"的意义了。
+        assert record["detector_results"][0]["version"] == L1_RULES_VERSION
 
     def test_degraded_decision_records_fail_mode(self) -> None:
         decision = run("你好", detectors=[RulesL1Detector(), timeout_stub()])

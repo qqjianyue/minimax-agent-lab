@@ -19,8 +19,12 @@ from detector_rules import (
     RuleSpec,
     is_luhn_valid,
     is_valid_cn_id,
+    is_valid_cn_mobile,
+    strip_separators,
 )
 from detector_rules.base import MAX_EVIDENCE
+from detector_rules.pii import BANK_CARD_RULE, CN_MOBILE_RULE
+from detector_rules.redactor import RegexRedactor
 from guard_contract.enums import GuardStage
 from guard_contract.port import DetectorPort
 from guard_contract.result import DetectorResult
@@ -257,6 +261,225 @@ class TestPII:
         )
         rules = {r.metadata["rule"] for r in results if r.label == "pii_leak"}
         assert {"pii_cn_id_card", "pii_cn_mobile", "pii_email"} <= rules
+
+
+# --- 分段写法 ---------------------------------------------------------------
+# 138-0013-8000 与 13800138000 是同一个号码。修法是让正则容忍分隔符、
+# 校验器里再剥（见 detector_rules.pii 模块 docstring），不是先规范化整段输入。
+# 下面这组测试同时钉住"该认的认出来"和"不该认的别放进来" —— 后者更重要，
+# 因为本轮治理的就是误报。
+
+
+class TestPIISeparatedFormats:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "13800138000",  # 连续写法（回归：放宽不能弄丢原有能力）
+            "138-0013-8000",
+            "138 0013 8000",
+            "138_0013_8000",
+            "138　0013　8000",  # 全角空格，中文文本里很常见
+        ],
+        ids=["plain", "hyphen", "space", "underscore", "fullwidth-space"],
+    )
+    def test_mobile_separated_detected(self, value: str) -> None:
+        assert "pii_leak" in labels_of(detector().detect(f"手机 {value}", stage=GuardStage.INPUT))
+
+    def test_mobile_evidence_keeps_original_formatting(self) -> None:
+        """审计要回答"用户到底发了什么"，evidence 不能被规范化改写。"""
+        results = detector().detect("手机 138-0013-8000", stage=GuardStage.INPUT)
+        evidence = next(r for r in results if r.metadata["rule"] == "pii_cn_mobile").evidence
+        assert evidence == ("138-0013-8000",)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "138001380001",  # 12 位
+            "1380013800",  # 10 位
+            "订单号 1138001380001",
+            "1380 0138000",  # 非 3-4-4 分段
+            "版本号138-0013-800",
+            "号码 138-0013-80001",
+        ],
+        ids=["12digit", "10digit", "longer-run", "odd-grouping", "truncated", "one-extra"],
+    )
+    def test_mobile_bad_forms_rejected(self, text: str) -> None:
+        assert "pii_cn_mobile" not in {
+            r.metadata["rule"] for r in detector().detect(text, stage=GuardStage.INPUT)
+        }
+
+    @pytest.mark.parametrize(
+        "text",
+        ["订单金额1380013.8000元", "金额1,380,013,8000", "版本号138.0013.8000"],
+        ids=["decimal-point", "thousands-comma", "dotted"],
+    )
+    def test_amounts_are_not_mobiles(self, text: str) -> None:
+        """点号与逗号是金额分隔符，刻意不进号码分隔符集。
+
+        放开它们等于把刚治理掉的误报重新请回来：
+        ``1380013.8000`` 剥掉点号就是一个标准手机号。
+        """
+        assert "pii_leak" not in labels_of(detector().detect(text, stage=GuardStage.INPUT))
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            VALID_CN_ID,
+            "110105-19491231-002X",
+            "110105 19491231 002X",
+            "11010519491231-002X",  # 只在末段前分隔
+            "110105-19491231002X",  # 只在首段后分隔
+        ],
+        ids=["plain", "hyphen", "space", "tail-sep", "head-sep"],
+    )
+    def test_cn_id_separated_detected(self, value: str) -> None:
+        results = detector().detect(f"身份证 {value}", stage=GuardStage.INPUT)
+        assert "pii_cn_id_card" in {r.metadata["rule"] for r in results}
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "110105-19491231-0021",  # 末位校验码错
+            "123456789012345678",
+            "110105-1949-1231-0021",
+        ],
+        ids=["bad-check-digit", "near-miss", "odd-grouping"],
+    )
+    def test_cn_id_separated_bad_checksum_rejected(self, value: str) -> None:
+        """分段写法不降低校验位要求 —— 这是"放宽匹配、收紧判定"的全部意义。"""
+        assert "pii_cn_id_card" not in {
+            r.metadata["rule"] for r in detector().detect(f"编号 {value}", stage=GuardStage.INPUT)
+        }
+        assert not is_valid_cn_id(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            VALID_CARD,
+            "4539 5787 6362 1486",
+            "4539-5787-6362-1486",
+            "4539_5787_6362_1486",
+            "4539578763621486123",  # 19 位 4-4-4-4-3 分段
+        ],
+        ids=["plain", "space", "hyphen", "underscore", "19-digit"],
+    )
+    def test_bank_card_separated_detected(self, value: str) -> None:
+        results = detector().detect(f"卡号 {value}", stage=GuardStage.INPUT)
+        assert "pii_bank_card" in {r.metadata["rule"] for r in results}
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "1234 5678 9012 3456",
+            "1111 1111 1111 1111",
+            "4539 5787 6362 148",  # 15 位
+            "4539 5787 6362 14867",  # 17 位但不过 Luhn
+        ],
+        ids=["luhn-fail", "all-ones", "too-short", "too-long"],
+    )
+    def test_bank_card_separated_bad_luhn_rejected(self, value: str) -> None:
+        assert "pii_bank_card" not in {
+            r.metadata["rule"] for r in detector().detect(f"订单 {value}", stage=GuardStage.INPUT)
+        }
+        assert not is_luhn_valid(value)
+
+    def test_card_pattern_does_not_join_two_mobiles(self) -> None:
+        """两个手机号隔一个空格 = 22 位数字。
+
+        若分段分支允许段间缺省，正则会跨过空格凑出 16 位，再以约 1/10 的
+        概率通过 Luhn —— 一个纯靠运气产生的误报。分隔符必填就是为了钉死这里。
+        """
+        spans = [
+            (m.start(), m.end())
+            for m in BANK_CARD_RULE.pattern.finditer("13800138000 13800138000")
+            if is_luhn_valid(m.group(0))
+        ]
+        assert spans == []
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("4539578763621486 4539578763621486", [(0, 16), (17, 33)]),
+            ("13800138000 4539578763621486", [(12, 28)]),
+            ("4539 5787 6362 1486 4539 5787 6362 1486", [(0, 19), (20, 39)]),
+        ],
+        ids=["two-cards", "mobile-then-card", "two-grouped-cards"],
+    )
+    def test_card_span_never_swallows_two_numbers(
+        self, text: str, expected: list[tuple[int, int]]
+    ) -> None:
+        spans = [
+            (m.start(), m.end())
+            for m in BANK_CARD_RULE.pattern.finditer(text)
+            if is_luhn_valid(m.group(0))
+        ]
+        assert spans == expected
+
+    def test_separated_card_redacted_whole(self) -> None:
+        """脱敏器跑的是同一批正则，因此分段写法无需额外改动就会被整体遮掉。
+
+        这是"不引入偏移映射表"的直接收益：命中区间天然就是原文区间。
+        """
+        result = RegexRedactor().redact("您的卡号 4539 5787 6362 1486 请确认")
+        assert "4539 5787 6362 1486" not in result.text
+        assert "[REDACTED:BANK_CARD]" in result.text
+        assert "请确认" in result.text
+
+    def test_separated_mobile_redacted_whole(self) -> None:
+        result = RegexRedactor().redact("请拨打 138-0013-8000 联系我们")
+        assert "138-0013-8000" not in result.text
+        assert "[REDACTED:CN_MOBILE]" in result.text
+        assert "请拨打" in result.text
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("138-0013-8000", "13800138000"),
+            ("138 0013 8000", "13800138000"),
+            ("13800138000", "13800138000"),
+            ("110105 19491231 002X", "11010519491231002X"),
+            ("4539-5787-6362-1486", "4539578763621486"),
+            ("订单金额1380013.8000", "订单金额1380013.8000"),  # 点号不剥
+            ("", ""),
+        ],
+        ids=["hyphen", "space", "plain", "id", "card", "decimal-kept", "empty"],
+    )
+    def test_strip_separators(self, raw: str, expected: str) -> None:
+        assert strip_separators(raw) == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("13800138000", True),
+            ("138-0013-8000", True),
+            ("138 0013 8000", True),
+            ("138001380001", False),
+            ("1380013800", False),
+            ("12345678901", False),  # 号段 2 不是 3-9
+            ("23800138000", False),  # 不是 1 开头
+            ("138-001-3800-0", True),  # 分隔位置不固定也按位数判
+            ("", False),
+            ("abcdefghijk", False),
+        ],
+        ids=[
+            "plain",
+            "hyphen",
+            "space",
+            "12-digit",
+            "10-digit",
+            "bad-prefix-2",
+            "bad-prefix-not-1",
+            "free-grouping",
+            "empty",
+            "letters",
+        ],
+    )
+    def test_is_valid_cn_mobile(self, value: str, expected: bool) -> None:
+        assert is_valid_cn_mobile(value) is expected
+
+    def test_mobile_rule_has_validator(self) -> None:
+        """手机号无校验位，正则放宽后就必须挂形态判定 —— 少挂等于裸奔。"""
+        assert CN_MOBILE_RULE.validator is not None
 
 
 # --- 通用行为 ---------------------------------------------------------------

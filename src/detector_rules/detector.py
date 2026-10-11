@@ -12,7 +12,11 @@ from guard_contract.result import DetectorResult
 
 #: L1 规则集版本。改动任何一条规则都必须同步 bump —— 审计记录要能回答
 #: "上周还在用 l1 v1.0，误报降了多少"这类问题（对应契约里的 version 字段）。
-L1_RULES_VERSION = "1.0.0"
+#:
+#: 1.1.0 —— 手机号/身份证/银行卡三条规则容忍分段写法（``138-0013-8000``、
+#: ``110105 19491231 002X``、``4539 5787 6362 1486``），匹配变宽。
+#: 版本号随之 minor bump，审计里能区分"放宽前后"两个口径的统计。
+L1_RULES_VERSION = "1.1.0"
 
 
 def build_l1_rule_set(extra: tuple[RuleSpec, ...] = ()) -> RuleSet:
