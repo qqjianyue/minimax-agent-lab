@@ -6,7 +6,7 @@ import time
 
 from detector_rules.base import RuleSet, RuleSpec
 from detector_rules.patterns import KEYWORD_RULES
-from detector_rules.pii import PII_RULES
+from detector_rules.pii import IDENTIFIER_RULES, PII_RULES
 from guard_contract.enums import GuardStage
 from guard_contract.result import DetectorResult
 
@@ -16,12 +16,18 @@ from guard_contract.result import DetectorResult
 #: 1.1.0 —— 手机号/身份证/银行卡三条规则容忍分段写法（``138-0013-8000``、
 #: ``110105 19491231 002X``、``4539 5787 6362 1486``），匹配变宽。
 #: 版本号随之 minor bump，审计里能区分"放宽前后"两个口径的统计。
-L1_RULES_VERSION = "1.1.0"
+#:
+#: 1.2.0 —— 补形态规则：护照号、座机（带区号 / 裸号带上下文锚点）并入
+#: PII_RULES 走脱敏；统一社会信用代码走独立规则集，只审计不脱敏。
+L1_RULES_VERSION = "1.2.0"
 
 
 def build_l1_rule_set(extra: tuple[RuleSpec, ...] = ()) -> RuleSet:
     """构建 L1 规则集。可传入额外规则（测试或按租户定制）。"""
-    return RuleSet(version=L1_RULES_VERSION, rules=KEYWORD_RULES + PII_RULES + extra)
+    return RuleSet(
+        version=L1_RULES_VERSION,
+        rules=KEYWORD_RULES + PII_RULES + IDENTIFIER_RULES + extra,
+    )
 
 
 class RulesL1Detector:

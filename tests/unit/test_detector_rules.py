@@ -10,16 +10,24 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from detector_rules import (
+    IDENTIFIER_RULES,
     L1_RULES_VERSION,
+    LABEL_ORG_IDENTIFIER,
+    LABEL_PII,
+    PII_RULES,
+    USCC_RULE,
     RuleSet,
     RulesL1Detector,
     RuleSpec,
     is_luhn_valid,
     is_valid_cn_id,
     is_valid_cn_mobile,
+    is_valid_uscc,
     strip_separators,
 )
 from detector_rules.base import MAX_EVIDENCE
@@ -36,6 +44,12 @@ VALID_CN_ID = "11010519491231002X"
 INVALID_CN_ID = "110105194912310021"
 # 已知可通过 Luhn 的测试卡号
 VALID_CARD = "4539578763621486"
+# GB 32100 文档里的示例统一社会信用代码（mod-31 校验位已核对）
+VALID_USCC = "91350100M000100Y43"
+# 另一条样本用于覆盖不同的行政区划码（110108 vs 350100）。它的校验位是按
+# 算法算出来的，因此**不能**用来独立验证校验算法 —— 独立验证靠上面那条
+# 文档样本：实现能独立接受它，才说明权重表抄对了。
+VALID_USCC_ALT = "9111010859131000X2"
 
 # 未加校验器的话这些都会被误判，说明校验器的必要性
 NEAR_MISS_IDS = ["110105194912310021", "123456789012345678"]
@@ -44,6 +58,12 @@ NEAR_MISS_CARDS = ["1234567890123456", "1111111111111111"]
 
 def detector() -> RulesL1Detector:
     return RulesL1Detector()
+
+
+def rules_of(text: str) -> set[str]:
+    """INPUT 阶段命中的规则名集合。形态规则要按名字断言而不是按 label ——
+    这一批里 pii_leak 和 org_identifier 是两个不同的处置口径。"""
+    return {r.metadata["rule"] for r in detector().detect(text, stage=GuardStage.INPUT)}
 
 
 def labels_of(results: tuple[DetectorResult, ...]) -> set[str]:
@@ -480,6 +500,197 @@ class TestPIISeparatedFormats:
     def test_mobile_rule_has_validator(self) -> None:
         """手机号无校验位，正则放宽后就必须挂形态判定 —— 少挂等于裸奔。"""
         assert CN_MOBILE_RULE.validator is not None
+
+
+# --- 形态规则（护照 / 座机 / 统一社会信用代码）-------------------------------
+# 这批规则不是"把正则写宽"，而是给三个此前**零覆盖**的实体建能力：
+# 实测 L1 与 Presidio 都抓不到它们，而手机号/身份证/银行卡在形态上是
+# 唯一的（纯数字长度），这些不是。
+#
+# 精确率的抓手各不相同，因此也不能用同一套办法：
+#   - USCC  有校验位**加**结构约束（登记管理部门代码 + 6 位行政区划码）
+#   - 护照  无校验位，只能靠法定前缀字母集合 + 前后边界
+#   - 座机  形态与业务数字完全重合，只能靠上下文锚点
+
+
+class TestPassportRule:
+    @pytest.mark.parametrize(
+        "value", ["E12345678", "G87654321", "D12345678", "S12345678", "H12345678", "M12345678"]
+    )
+    def test_legal_prefix_detected(self, value: str) -> None:
+        assert "pii_cn_passport" in rules_of(f"护照 {value}")
+
+    def test_lowercase_prefix_detected(self) -> None:
+        assert "pii_cn_passport" in rules_of("护照 e12345678")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "E1234567",  # 7 位（旧版格式，不认）
+            "E123456789",  # 9 位
+            "Z12345678",  # 非法前缀
+            "X12345678",
+            "E1234567X",  # 末位非数字
+            "订单A12345678号",  # 非法前缀
+        ],
+        ids=["7-digit", "9-digit", "bad-z", "bad-x", "trailing-x", "bad-a"],
+    )
+    def test_near_miss_rejected(self, value: str) -> None:
+        assert "pii_cn_passport" not in rules_of(f"单据 {value}")
+
+    def test_redacted(self) -> None:
+        result = RegexRedactor().redact("请出示护照 E12345678")
+        assert result.text == "请出示护照 [REDACTED:CN_PASSPORT]"
+
+
+class TestLandlineRules:
+    @pytest.mark.parametrize(
+        "value", ["021-58880000", "010-58880000", "0755-83000000", "021 58880000"]
+    )
+    def test_area_code_detected(self, value: str) -> None:
+        assert "pii_cn_landline_area" in rules_of(f"座机 {value}")
+
+    @pytest.mark.parametrize(
+        "value",
+        ["400-820-8820", "4008208820", "95588", "0213-588800000", "座机-5888000"],
+        ids=["400-hyphen", "400-plain", "95588", "too-long", "short"],
+    )
+    def test_hotlines_and_bad_forms_rejected(self, value: str) -> None:
+        """客服热线是企业对外公开号码，不是个人信息，脱敏只会打残答案。"""
+        assert "pii_cn_landline_area" not in rules_of(f"客服电话 {value}")
+
+    @pytest.mark.parametrize(
+        "text",
+        ["座机58880000，请稍后拨通", "联系电话：58880000", "固话 83000000 转 8123", "Tel 58880000"],
+    )
+    def test_bare_detected_with_context(self, text: str) -> None:
+        assert "pii_cn_landline_bare" in rules_of(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "本次交易金额为8765432元，手续费12元",
+            "预约编号12345678，请按时到店",
+            "工号 12345678 已入职",
+            "58880000",  # 无任何上下文
+            "这个号码 58880000 请核验",  # 锚点词在 12 字窗口之外
+        ],
+        ids=["amount", "order-no", "staff-no", "no-context", "anchor-too-far"],
+    )
+    def test_bare_requires_context_anchor(self, text: str) -> None:
+        """裸号形态与业务数字完全重合，没有锚点就是一台误报制造机。"""
+        assert "pii_cn_landline_bare" not in rules_of(text)
+
+    def test_area_form_does_not_emit_duplicate_evidence(self) -> None:
+        """021-58880000 里的 58880000 本身也满足裸号形态且前后有"座机"。
+
+        两份证据指向同一个实体，脱敏结果相同（占位符同为 CN_LANDLINE、
+        重叠取最长），但审计不该有这种噪声。
+        """
+        assert rules_of("座机 021-58880000") == {"pii_cn_landline_area"}
+
+    def test_redacted(self) -> None:
+        assert RegexRedactor().redact("座机 021-58880000").text == "座机 [REDACTED:CN_LANDLINE]"
+        bare = RegexRedactor().redact("联系电话：58880000")
+        assert bare.text == "联系电话：[REDACTED:CN_LANDLINE]"
+
+
+class TestUsccRule:
+    @pytest.mark.parametrize("value", [VALID_USCC, VALID_USCC_ALT])
+    def test_valid_detected(self, value: str) -> None:
+        assert "org_uscc" in rules_of(f"公司代码 {value}")
+
+    def test_lowercase_detected(self) -> None:
+        """小写代码的召回代价远大于 0.001pp 的精确率收益，所以用 re.I。"""
+        assert "org_uscc" in rules_of(f"公司代码 {VALID_USCC.lower()}")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            VALID_USCC[:-1] + ("A" if VALID_USCC[-1] != "A" else "B"),  # 校验位错
+            "91350100M000100Y4",  # 17 位
+            "91350100M000100Y443",  # 19 位
+            "21350100M000100Y43",  # 首位非登记管理部门代码
+            "9135AB00M000100Y43",  # 行政区划码不是 6 位纯数字
+        ],
+        ids=["bad-check", "17-digit", "19-digit", "bad-registry", "bad-district"],
+    )
+    def test_invalid_rejected(self, value: str) -> None:
+        assert "org_uscc" not in rules_of(f"编号 {value}")
+
+    @pytest.mark.parametrize(
+        "token",
+        ["I91350100M000100Y43", "91350100M000100Y4O", "91350100M000100Y4S", "91350100M000100Y4V"],
+        ids=["has-I", "has-O", "has-S", "has-V"],
+    )
+    def test_excluded_letters_rejected(self, token: str) -> None:
+        """字符集排除 I O S V Z —— 与 1 0 5 V Z 形近的四个字母。"""
+        assert "org_uscc" not in rules_of(f"代码 {token}")
+
+    def test_structure_is_enforced_by_validator_not_only_regex(self) -> None:
+        """只做校验位的话随机 token 通过率是 3.204%，带结构约束是 0.040%。
+
+        这条钉住"结构约束在校验器里"：规则实际行为是正则 ∧ 校验器，
+        如果校验器单独用会给出与规则不符的答案，那它就是个会说谎的工具。
+        """
+        assert not is_valid_uscc("9135AB00M000100Y43")  # 结构不合规
+        assert not is_valid_uscc("21350100M000100Y43")  # 首位不合规
+        assert is_valid_uscc(VALID_USCC)
+
+    def test_collision_rate_on_random_tokens(self) -> None:
+        """固定种子的蒙特卡洛：随机 hex token 的误判率必须钉在低位。
+
+        不是概率性 flaky 测试 —— 种子固定，结果确定。钉的是"结构约束一旦
+        被误删，这条会立刻变红"。
+        """
+        rng = random.Random(20261011)
+        trials = 20_000
+        hits = sum(
+            1
+            for _ in range(trials)
+            if is_valid_uscc("".join(rng.choice("0123456789ABCDEF") for _ in range(18)))
+        )
+        rate = hits / trials
+        assert rate < 0.001, f"USCC 随机 token 碰撞率 {rate:.4%} 过高，结构约束可能失效"
+
+    def test_not_in_pii_rules_so_redactor_cannot_see_it(self) -> None:
+        """只审计不脱敏必须是结构保证，不是"策略里恰好没有匹配规则"。
+
+        RegexRedactor 默认只吃 PII_RULES；USCC 放进 IDENTIFIER_RULES 之后，
+        脱敏器根本看不见它，漏不漏都不可能改到文本。
+        """
+        assert USCC_RULE not in PII_RULES
+        assert USCC_RULE in IDENTIFIER_RULES
+        sample = f"请查一下 {VALID_USCC} 的开户信息"
+        assert RegexRedactor().redact(sample).changed is False
+
+    def test_visible_in_detector_output(self) -> None:
+        """只审计的含义是"看得见"，不是"看不见"。"""
+        results = detector().detect(f"公司代码 {VALID_USCC}", stage=GuardStage.INPUT)
+        hit = next(r for r in results if r.metadata["rule"] == "org_uscc")
+        assert hit.label == LABEL_ORG_IDENTIFIER
+        assert hit.evidence == (VALID_USCC,)
+        assert hit.score < 0.60  # 低于 escalate_borderline 门槛 → 不干扰请求
+
+    def test_has_own_label_not_pii(self) -> None:
+        assert USCC_RULE.label == LABEL_ORG_IDENTIFIER
+        assert LABEL_ORG_IDENTIFIER != LABEL_PII
+
+
+class TestMorphologyDoesNotRegressPII:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("身份证11010519491231002X", "身份证[REDACTED:CN_ID]"),
+            ("手机138-0013-8000", "手机[REDACTED:CN_MOBILE]"),
+            ("卡号4539 5787 6362 1486", "卡号[REDACTED:BANK_CARD]"),
+            ("联系 zhang.san@example.com", "联系 [REDACTED:EMAIL]"),
+            ("手机13800138000", "手机[REDACTED:CN_MOBILE]"),
+        ],
+    )
+    def test_existing_entities_still_redacted(self, text: str, expected: str) -> None:
+        """新规则不能挤掉既有能力 —— 身份证/银行卡/邮箱仍必须照常脱敏。"""
+        assert RegexRedactor().redact(text).text == expected
 
 
 # --- 通用行为 ---------------------------------------------------------------
