@@ -93,7 +93,7 @@ main() {
   rsync -a --delete \
     --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
     --exclude '*.pyc' --exclude '.pytest_cache' --exclude '.ruff_cache' \
-    --exclude '.coverage' --exclude '.env' --exclude '.release-env' \
+    --exclude '.cache' --exclude '.coverage' --exclude '.env' --exclude '.release-env' \
     "${SOURCE_REPO}/" "${rel}/"
   export_release_env "$NEW_RELEASE" "$rel"
   # 组件 env 先生成（模板 + 环境总配置定制），sync_component_env 才能读到

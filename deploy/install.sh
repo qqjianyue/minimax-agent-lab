@@ -82,10 +82,14 @@ main() {
   [[ -d "$rel" ]] && die "版本 ${version} 已存在；请改用 update.sh"
   mkdir -p "$rel"
   # 排除不该进 release 的东西
+  # .cache：uv/pip 缓存目录的兜底排除 —— 部署链路已把 UV_CACHE_DIR
+  # 固定到持久目录 /data/workspace/.cache/uv，但若源码树/副本意外出现
+  # .cache（任何人在副本目录跑 uv/pip），不排除就会被 rsync 搬进每个
+  # release 且每次部署反复搬运，污染 release 体积。
   rsync -a --delete \
     --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
     --exclude '*.pyc' --exclude '.pytest_cache' --exclude '.ruff_cache' \
-    --exclude '.coverage' --exclude '.env' \
+    --exclude '.cache' --exclude '.coverage' --exclude '.env' \
     "${SOURCE_REPO}/" "${rel}/"
   export_release_env "$version" "$rel"
   ok "已暂存版本 ${version}"
