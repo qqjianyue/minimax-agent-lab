@@ -25,10 +25,17 @@
 未覆盖的场景用显式 skip 标记，**不会被静默跳过** —— 部署日志里能看到
 "还有哪些功能没验证"。
 
-> FT-01 说明：真实模型输出带不确定性 —— presidio（en NER）对中文文本偶发
-> 误报 PERSON/LOCATION/NRP → 输出被正确脱敏为 redact（合规行为，非拦截）。
-> 因此 FT-01 断言"正常查询不 block"（allow/redact 均通过），block 才是回归。
-> B5 遗留：presidio en NER 对中文误报率约 40%，建议后续对中文禁用 NER。
+> FT-01 说明（B4 已收紧）：这条断言原本是 `action in {allow, redact}`，因为
+> presidio（en NER）对中文文本误报 PERSON/LOCATION → 输出被 redact 而非 allow。
+> **那是把检测器缺陷写进了验收标准**：放宽之后，即便将来 100% 的正常查询
+> 都被 redact，这条用例照样通过，已失去检测该回归的能力。
+> B4 把 Presidio 换成 en+zh 双语引擎后中文召回率实测 33.3% → 100%，因此断言
+> **收回 allow**，并加一次采样确认模型没把整句当实体。
+>
+> ⚠️ 这条用例问的是**本条提问**，不是平均误报率。v0.1.15 部署后的真实流量复测
+> 显示 12 条业务提问里仍有 5 条被判 redact（形态过滤在**中英混排**输出上整体
+> 失效，详见 presidio_pii.py 的 docstring）—— 本条通过**不代表**误报已修完，
+> 别把它当成中文误报的守门人。
 """
 
 from __future__ import annotations
@@ -60,11 +67,16 @@ def chat(http: httpx.Client, message: str) -> dict:
 class TestFT01NormalQuery:
     def test_allowed_with_complete_evidence(self, http: httpx.Client) -> None:
         body = chat(http, "用两句话介绍你们的定期存款产品")
-        # 真实模型输出带不确定性：presidio（en NER）对中文文本偶发误报
-        # PERSON/LOCATION/NRP → 输出被正确脱敏为 redact（合规行为，不是拦截）。
-        # 因此"正常查询"的断言是**不 block**（allow 或 redact 都算通过），
-        # 响应必须有内容；block 才是回归。
-        assert body["action"] in {"allow", "redact"}, body["action"]
+        # 断言是 **allow**，不是 in {allow, redact}。
+        # B4 之前放宽成 allow/redact，是因为 presidio 用英文 NER 跑中文，
+        # 误报率 41.7%（实测最长误报 128 字 —— 整段输出被当成一个 LOCATION），
+        # 输出被正确脱敏成 redact。把检测器缺陷写进验收标准的代价是：
+        # 断言再也检测不到它 —— 100% 正常查询被 redact 也照样绿。
+        # 现在中文走 zh 模型，召回率实测 100%，所以收回。
+        assert body["action"] == "allow", (
+            f"正常业务查询被判 {body['action']}。"
+            "中文误报回归的话，多半是 Presidio 的双语装配或形态过滤被改坏了。"
+        )
         assert body["response"].strip()
         assert body["llm_called"] is True
         # 两侧检测点都必须留下决策记录，不能因为"看起来正常"就跳过

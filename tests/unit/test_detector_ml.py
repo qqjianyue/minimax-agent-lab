@@ -25,7 +25,11 @@ from detector_ml import (
 )
 from detector_ml.embedding_similarity import LABEL_INJECTION
 from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT
-from detector_ml.presidio_pii import LABEL_PII
+from detector_ml.presidio_pii import (
+    LABEL_PII,
+    detect_language,
+    passes_shape_filter,
+)
 from detector_ml.timeout import run_detector_with_timeout
 from guard_contract.enums import GuardStage
 from guard_contract.port import DetectorTimeoutError
@@ -79,21 +83,128 @@ class TestRunWithTimeout:
 
 
 class _FakeAnalyzerHit:
-    def __init__(self, entity_type: str, start: int, end: int, score: float) -> None:
+    def __init__(
+        self,
+        entity_type: str,
+        start: int,
+        end: int,
+        score: float,
+        recognizer: str | None = None,
+    ) -> None:
         self.entity_type = entity_type
         self.start = start
         self.end = end
         self.score = score
+        # 真实 Presidio 的 RecognizerResult 带 recognition_metadata，
+        # 检测器据此区分 NER 产出与格式类产出。默认 None = 认不出来，
+        # 与旧版 fake 的行为一致（未知来源一律放行）。
+        self.recognition_metadata = None if recognizer is None else {"recognizer_name": recognizer}
 
 
 class _FakeAnalyzer:
     def __init__(self, hits: list[_FakeAnalyzerHit]) -> None:
         self.hits = hits
+        self.calls: list[str] = []
 
     def analyze(
         self, *, text: str, language: str, score_threshold: float
     ) -> list[_FakeAnalyzerHit]:
+        self.calls.append(language)
         return self.hits
+
+
+class TestLanguageRouting:
+    """语言路由（纯函数，不依赖模型 —— 本地全离线可测）。
+
+    规则：汉字数 ≥ 2 且 ≥ 拉丁字母数 → zh，否则 en。
+    不用字符占比是有原因的，见 detect_language 的 docstring。
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("用两句话介绍你们的定期存款产品", "zh"),
+            ("客户张伟，手机号13800138000", "zh"),
+            ("李娜的账户 sking 有问题吗", "zh"),  # 混排，中文主导
+            ("VIP 客户 张伟 来办理", "zh"),
+            ("张伟", "zh"),  # 短人名也要走中文模型
+            ("🏦 手机银行怎么办", "zh"),
+            ("My name is John Smith", "en"),
+            ("sking", "en"),
+            ("13800138000", "en"),  # 纯数字交给格式类识别器
+            ("APP 怎么下载", "zh"),  # 汉字 4 > 拉丁 3，中文主导
+            ("VIP 贵宾", "en"),  # 拉丁 3 > 汉字 2
+            ("WiFi 密码", "en"),  # 拉丁 4 > 汉字 2
+            ("", "en"),
+        ],
+    )
+    def test_routes_by_han_dominance(self, text: str, expected: str) -> None:
+        assert detect_language(text) == expected
+
+    def test_detector_passes_routed_language_to_analyzer(self) -> None:
+        analyzer = _FakeAnalyzer([])
+        PresidioPiiDetector(analyzer=analyzer).detect("客户张伟在北京", stage=GuardStage.INPUT)
+        assert analyzer.calls == ["zh"]
+
+    def test_forced_language_overrides_routing(self) -> None:
+        analyzer = _FakeAnalyzer([])
+        PresidioPiiDetector(analyzer=analyzer, language="en").detect(
+            "客户张伟在北京", stage=GuardStage.INPUT
+        )
+        assert analyzer.calls == ["en"]
+
+    def test_invalid_language_rejected(self) -> None:
+        with pytest.raises(ValueError, match="language"):
+            PresidioPiiDetector(analyzer=_FakeAnalyzer([]), language="cn")
+
+
+class TestShapeFilter:
+    """形态过滤器（纯函数）。
+
+    它**不判断真假** —— 实测误报与真命中的分数同为 0.85，阈值区分不了。
+    只判断"这长得像不像中文人名/地名"。下面的负样本全部取自 B4 关卡 0
+    在目标机上观察到的**真实误报**，不是编造的。
+    """
+
+    @pytest.mark.parametrize(
+        "fragment",
+        ["张伟", "李娜", "王强", "陈晓东", "刘洋", "张敏", "北京市朝阳区建国路88号"],
+    )
+    def test_real_chinese_names_and_address_pass(self, fragment: str) -> None:
+        assert passes_shape_filter(fragment) is True
+
+    @pytest.mark.parametrize(
+        ("fragment", "why"),
+        [
+            ("needing", "英文残留"),
+            ("sking", "英文残留"),
+            ("banks", "英文残留"),
+            ("🏦", "emoji"),
+            ("⏱️", "emoji"),
+            ("(大额", "分词碎片，单个汉字"),
+            ("方App", "中英混排碎片"),
+            ("TF代销", "中英混排碎片"),
+            ("如费率", "金融业务术语"),
+            ("大额", "金融业务术语"),
+            ("代销", "金融业务术语"),
+        ],
+    )
+    def test_observed_false_positives_are_rejected(self, fragment: str, why: str) -> None:
+        assert passes_shape_filter(fragment) is False, why
+
+    def test_digits_are_allowed_because_of_house_numbers(self) -> None:
+        """门牌号是正常地址的一部分。
+
+        第一版把数字和字母一起禁掉，结果把 `北京市朝阳区建国路88号` 整条误杀 ——
+        这是我在自己实验里发现并修掉的缺陷，锁住以防复发。
+        """
+        assert passes_shape_filter("北京市朝阳区建国路88号") is True
+
+    def test_single_han_character_rejected(self) -> None:
+        assert passes_shape_filter("王") is False
+
+    def test_empty_rejected(self) -> None:
+        assert passes_shape_filter("") is False
 
 
 class TestPresidioPiiDetector:
@@ -146,6 +257,79 @@ class TestPresidioPiiDetector:
             PresidioPiiDetector()
 
 
+class TestShapeFilterIsAppliedOnlyWhereItBelongs:
+    """形态过滤的作用边界 —— 这组用例锁的是"**不该过滤的别过滤**"。
+
+    中文误报率高是真问题，但不能为了压误报把邮箱、手机号、英文人名一起干掉：
+    那等于把 L2 的检出能力换了个干净，功能上更糟。
+    """
+
+    def test_ner_false_positive_on_chinese_is_dropped(self) -> None:
+        text = "您可以通过手机银行办理定期存款，也可以携带身份证到网点办理"
+        start = text.index("您可以通过")
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit("LOCATION", start, start + 29, 0.85, recognizer="SpacyRecognizer")]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert out == (), "整句被当成一个地名 —— 这正是要挡掉的误报"
+
+    def test_ner_true_positive_on_chinese_survives(self) -> None:
+        text = "客户张伟在北京办理业务"
+        start = text.index("张伟")
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit("PERSON", start, start + 2, 0.85, recognizer="SpacyRecognizer")]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert len(out) == 1
+        assert out[0].metadata["entity"] == "PERSON"
+
+    def test_email_survives_because_its_recognizer_is_not_ner(self) -> None:
+        """`邮箱chenxiaodong@example.com` 含拉丁字母却是真 PII。
+
+        拿"中文形态"规则去筛它就是本末倒置 —— 形态过滤只能作用于 NER 产出。
+        """
+        text = "联系邮箱chenxiaodong@example.com"
+        start = text.index("邮箱")
+        analyzer = _FakeAnalyzer(
+            [
+                _FakeAnalyzerHit(
+                    "EMAIL_ADDRESS",
+                    start,
+                    len(text),
+                    1.0,
+                    recognizer="EmailRecognizer",
+                )
+            ]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert len(out) == 1
+        assert out[0].metadata["entity"] == "EMAIL_ADDRESS"
+
+    def test_unknown_recognizer_passes_through(self) -> None:
+        """认不出recognizer_name 时一律放行 —— 过滤器只删能被证明是 NER 的命中。"""
+        text = "客户张伟在北京"
+        start = text.index("张伟")
+        analyzer = _FakeAnalyzer([_FakeAnalyzerHit("PERSON", start, start + 2, 0.85)])
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert len(out) == 1
+
+    def test_filter_is_not_applied_on_english_path(self) -> None:
+        """英文侧的"形态"就是字母 —— 拿中文规则去筛会把 John Smith 全杀掉。"""
+        text = "My name is John Smith"
+        start = text.index("John Smith")
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit("PERSON", start, start + 10, 0.85, recognizer="SpacyRecognizer")]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert len(out) == 1, "英文人名被中文形态规则误杀了"
+        assert out[0].metadata["language"] == "en"
+
+    def test_metadata_records_routed_language(self) -> None:
+        analyzer = _FakeAnalyzer([_FakeAnalyzerHit("PERSON", 2, 4, 0.85)])
+        out = PresidioPiiDetector(analyzer=analyzer).detect("客户张伟", stage=GuardStage.OUTPUT)
+        assert out[0].metadata["language"] == "zh"
+
+
 # --- L3 嵌入相似度 ----------------------------------------------------------
 
 
@@ -169,9 +353,7 @@ class TestEmbeddingSimilarityDetector:
         embedder = FakeEmbedder(
             vectors={"sample": [1.0, 0.0, 0.0, 0.0], "input": [0.0, 1.0, 0.0, 0.0]}
         )
-        detector = EmbeddingSimilarityDetector(
-            embedder, samples=("sample",), threshold=0.9
-        )
+        detector = EmbeddingSimilarityDetector(embedder, samples=("sample",), threshold=0.9)
         assert detector.detect("input", stage=GuardStage.INPUT) == ()
 
     def test_below_threshold_returns_nothing(self) -> None:
@@ -182,9 +364,7 @@ class TestEmbeddingSimilarityDetector:
 
     def test_evidence_points_to_sample_not_user_text(self) -> None:
         embedder = FakeEmbedder(vectors={"sample-a": [1.0, 0.0, 0.0, 0.0]})
-        detector = EmbeddingSimilarityDetector(
-            embedder, samples=("sample-a",), threshold=0.8
-        )
+        detector = EmbeddingSimilarityDetector(embedder, samples=("sample-a",), threshold=0.8)
         hit = detector.detect("sample-a", stage=GuardStage.INPUT)[0]
         assert "sample-a" not in hit.evidence  # evidence 只含样本索引
         assert hit.metadata["matched_sample_index"] == 0

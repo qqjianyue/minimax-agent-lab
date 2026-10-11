@@ -110,9 +110,9 @@ main() {
 
   # --- 4. ML 模型资产（D1/D2，切换前）---------------------------------
   # ensure_venv 的 `uv sync` 会把**不在 uv.lock 里的包**从 venv 移除 ——
-  # spacy 模型（en_core_web_lg）按 D2 设计不进 lock（模型与代码独立版本、
-  # 由 infra/spacy 单独管理），所以**每次部署后必须重装**，否则 L0/L1 里
-  # presidio 检测器会因模型缺失而尝试联网下载（离线闸门下直接失败）。
+  # spacy 模型（en_core_web_lg / zh_core_web_lg）按 D2 设计不进 lock（模型与
+  # 代码独立版本、由 infra/spacy 单独管理），所以**每次部署后必须重装**，否则
+  # L0/L1 里 presidio 检测器会因模型缺失而尝试联网下载（离线闸门下直接失败）。
   # models 不在 venv 里（shared/models），uv sync 不影响它，但同样在这里
   # 做一次完整性校验 —— 模型坏掉时在切换前就暴露，而不是上线后才发现。
   # 两个脚本幂等：已装且版本一致时秒级跳过。

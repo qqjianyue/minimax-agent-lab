@@ -377,8 +377,9 @@ sync_component_env() {
 #:      显式覆写生成的 env。这是**唯一**的机器定制入口，禁止手工改 env。
 #:   2. spacy 专用自动注入：若持久 wheel 目录（${AGENT_HOME%/*}/tmp，如
 #:      /data/workspace/tmp）下存在本地 wheel，且总配置未显式设置
-#:      MODEL_WHEEL_URL，自动写入 file:// 本地路径 —— 目标机 GitHub 不可达
-#:      时免联网，且 wheel 放持久目录（/tmp 会在重启时被系统清空，已踩过）。
+#:      MODEL_WHEEL_URL_EN / _ZH（B4 起按语言分开），自动写入 file:// 本地路径
+#:      —— 目标机 GitHub 不可达时免联网，且 wheel 放持久目录（/tmp 会在重启
+#:      时被系统清空，已踩过）。
 #:   3. env.template 默认值（AGENT_HOME/MODELS_HOME 按部署根修正）。
 #:
 #: 环境总配置示例（/data/workspace/minimax-agent/config.yaml）：
@@ -454,14 +455,26 @@ open(env_path, "w", encoding="utf-8").write(text)
 PY
   fi
 
-  # spacy 专用兜底：总配置未显式设置 MODEL_WHEEL_URL（模板仍为空）且
-  # 持久目录有本地 wheel → 自动注入 file:// 路径
+  # spacy 专用兜底：总配置未显式设置 MODEL_WHEEL_URL_*（模板仍为空）且
+  # 持久目录有本地 wheel → 自动注入 file:// 路径。
+  #
+  # B4 起按语言分别注入（MODEL_WHEEL_URL_EN / _ZH）：曾经只有一个变量，
+  # 漏改的后果是 zh 模型在部署时去联网下载 —— 目标机直连 GitHub 约
+  # 100KB/s，575MB 要 1.5 小时，部署直接卡住。
   if [[ "$name" == "spacy" ]]; then
-    local wheel
-    wheel="$(ls "${AGENT_HOME%/*}/tmp"/en_core_web_lg-*.whl 2>/dev/null | head -1 || true)"
-    if [[ -n "$wheel" ]] && grep -q '^MODEL_WHEEL_URL=$' "$env"; then
-      sed -i "s|^MODEL_WHEEL_URL=$|MODEL_WHEEL_URL=file://${wheel}|" "$env"
-    fi
+    local lang import wheel key
+    for lang in EN ZH; do
+      case "$lang" in
+        EN) import="en_core_web_lg" ;;
+        ZH) import="zh_core_web_lg" ;;
+      esac
+      key="MODEL_WHEEL_URL_${lang}"
+      wheel="$(ls "${AGENT_HOME%/*}/tmp"/"${import}"-*.whl 2>/dev/null | head -1 || true)"
+      if [[ -n "$wheel" ]] && grep -q "^${key}=$" "$env"; then
+        sed -i "s|^${key}=$|${key}=file://${wheel}|" "$env"
+        log "  ${key} -> ${wheel}"
+      fi
+    done
   fi
   ok "已生成 ${env}"
 }

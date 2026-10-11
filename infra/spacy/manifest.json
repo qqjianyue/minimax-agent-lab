@@ -1,10 +1,21 @@
 {
-  "model": {
-    "package": "en-core-web-lg",
-    "version": "3.8.0",
-    "import_name": "en_core_web_lg",
-    "approx_size_mib": 589,
-    "install_target": "shared/venv",
-    "notes": "版本精确 pin：800MiB 资产跟随 latest 会让应用回退失去意义（与 phoenix tag 固定同理）"
-  }
+  "models": [
+    {
+      "package": "en-core-web-lg",
+      "version": "3.8.0",
+      "import_name": "en_core_web_lg",
+      "lang_code": "en",
+      "approx_size_mib": 589,
+      "notes": "版本精确 pin：800MiB 资产跟随 latest 会让应用回退失去意义（与 phoenix tag 固定同理）"
+    },
+    {
+      "package": "zh-core-web-lg",
+      "version": "3.8.0",
+      "import_name": "zh_core_web_lg",
+      "lang_code": "zh",
+      "approx_size_mib": 575,
+      "requires": "spacy-pkuseg>=1.0.1,<2.0",
+      "notes": "B4 起启用：中文 NER。必须配 spacy-pkuseg 1.x —— 0.0.33 的二进制 wheel 是 numpy 1.x ABI，在 numpy 2.x 上直接 ValueError。装它会把 numpy 拉高（实测 2.4.6 → 2.5.4），依赖指纹随之变化。"
+    }
+  ]
 }

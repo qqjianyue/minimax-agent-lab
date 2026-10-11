@@ -26,9 +26,16 @@ from detector_ml.embedding_similarity import (
 )
 from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT, JUDGE_VERSION, LLMJudgeDetector
 from detector_ml.presidio_pii import (
+    EN_MODEL,
     LABEL_PII,
+    LANG_EN,
+    LANG_ZH,
     PRESIDIO_VERSION,
+    SUPPORTED_LANGUAGES,
+    ZH_MODEL,
     PresidioPiiDetector,
+    detect_language,
+    passes_shape_filter,
 )
 from detector_ml.registry import DetectorRegistry
 from detector_ml.timeout import run_detector_with_timeout
@@ -37,17 +44,24 @@ __all__ = [
     "ATTACK_SAMPLES",
     "DEFAULT_MODEL_NAME",
     "DEFAULT_THRESHOLD",
+    "EN_MODEL",
     "EmbeddingSimilarityDetector",
     "JUDGE_SYSTEM_PROMPT",
     "JUDGE_VERSION",
     "LABEL_INJECTION",
     "LABEL_PII",
+    "LANG_EN",
+    "LANG_ZH",
     "LLMJudgeDetector",
     "MODELS_HOME_ENV",
     "PRESIDIO_VERSION",
     "PresidioPiiDetector",
     "SAMPLES_VERSION",
+    "SUPPORTED_LANGUAGES",
     "SentenceEmbedder",
+    "ZH_MODEL",
     "DetectorRegistry",
+    "detect_language",
+    "passes_shape_filter",
     "run_detector_with_timeout",
 ]

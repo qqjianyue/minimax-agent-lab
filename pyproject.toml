@@ -1,6 +1,6 @@
 [project]
 name = "minimax-agent"
-version = "0.1.14"
+version = "0.1.15"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -36,6 +36,14 @@ ml = [
     "presidio-analyzer>=2.2.358",
     "sentence-transformers>=3.0",
     "spacy>=3.7,<4.0",
+    # zh_core_web_lg 的中文分词器（B4 关卡 0 实测：中文 NER 走 spaCy 原生方案，
+    # 中文召回率 33.3% → 100%）。
+    # 关卡 0 当时记的"误报 41.7% → 过滤后 0%"已被真实流量证伪：形态过滤绑在
+    # 文档级语言上，中英混排输出整段判 en 时过滤整体失效，线上实测仍 33.3%。
+    # **必须 >=1.0.1**：0.0.33 是针对 numpy 1.x ABI 编译的二进制 wheel，在
+    # numpy 2.x 上直接 `ValueError: numpy.dtype size changed`。
+    # 注意它会把 numpy 拉高（实测 2.4.6 → 2.5.4），依赖指纹随之变化。
+    "spacy-pkuseg>=1.0.1,<2.0",
 ]
 
 [dependency-groups]
