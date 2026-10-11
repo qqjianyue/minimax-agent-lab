@@ -15,11 +15,14 @@ from collections.abc import Sequence
 
 from detector_rules.base import RuleSpec
 from detector_rules.pii import PII_RULES
-from policy_engine.redactor import Redaction, RedactionResult
+from policy_engine.redactor import (
+    Redaction,
+    RedactionResult,
+    apply_redactions,
+    placeholder_for,
+)
 
-
-def placeholder_for(kind: str) -> str:
-    return f"[REDACTED:{kind}]"
+__all__ = ["RegexRedactor", "placeholder_for"]
 
 
 class RegexRedactor:
@@ -51,36 +54,10 @@ class RegexRedactor:
         if not spans:
             return RedactionResult(text=text)
 
-        # 重叠片段：同一段文字被多条规则命中时只脱敏一次，保留最长的那个
-        spans = _dedupe_overlaps(spans)
-
-        # 从右往左替换，保证左侧片段的偏移量不受影响
-        result = text
-        for start, end, kind in sorted(spans, key=lambda s: s[0], reverse=True):
-            result = result[:start] + placeholder_for(kind) + result[end:]
-
-        redactions = tuple(
-            Redaction(kind=kind, start=start, end=end)
-            for start, end, kind in sorted(spans, key=lambda s: s[0])
+        # 重叠与替换逻辑共用 policy_engine 的实现 —— 正则脱敏与决策驱动的
+        # 区间脱敏必须在"重叠取最长、从右往左替换"上完全一致，否则同一个
+        # 实体在两条路径下会得到不同的遮盖范围。
+        return apply_redactions(
+            text,
+            [Redaction(kind=kind, start=start, end=end) for start, end, kind in spans],
         )
-        return RedactionResult(text=result, redactions=redactions)
-
-
-def _dedupe_overlaps(spans: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
-    """去掉重叠片段，保留覆盖范围最大的那个。"""
-    if not spans:
-        return []
-    ordered = sorted(spans, key=lambda s: (s[0], -(s[1] - s[0])))
-    kept: list[tuple[int, int, str]] = [ordered[0]]
-    for start, end, kind in ordered[1:]:
-        last_start, last_end, _ = kept[-1]
-        if start < last_end:
-            # 重叠：若当前片段更长则替换掉上一个
-            if (end - start) > (last_end - last_start):
-                kept[-1] = (start, end, kind)
-            continue
-        kept.append((start, end, kind))
-    return kept
-
-
-__all__ = ["RegexRedactor", "placeholder_for"]

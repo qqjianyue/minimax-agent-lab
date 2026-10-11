@@ -112,7 +112,12 @@ def input_guard_node(state: OrchestratorState, runner: GuardRunner) -> Orchestra
         span_name="input_guard",
         metadata={"endpoint": "/chat"},
     )
-    outcome = apply_action(decision.action, state["user_message"], redactor=runner.redactor)
+    outcome = apply_action(
+        decision.action,
+        state["user_message"],
+        redactor=runner.redactor,
+        results=decision.results,
+    )
     next_state = dict(state)
     next_state["input_decision"] = decision
     next_state["guarded_input"] = outcome.text
@@ -293,7 +298,12 @@ def output_guard_node(state: OrchestratorState, runner: GuardRunner) -> Orchestr
         span_name="output_guard",
         metadata={"endpoint": "/chat"},
     )
-    outcome = apply_action(decision.action, text, redactor=runner.redactor)
+    outcome = apply_action(
+        decision.action,
+        text,
+        redactor=runner.redactor,
+        results=decision.results,
+    )
     next_state = dict(state)
     next_state["output_decision"] = decision
     next_state["response"] = outcome.text

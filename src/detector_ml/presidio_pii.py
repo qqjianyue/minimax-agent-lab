@@ -382,7 +382,15 @@ class PresidioPiiDetector:
                         confidence=hit.score,
                         evidence=(f"{hit.entity_type}:{_mask(fragment)}",),
                         latency_ms=elapsed_ms,
-                        metadata={"entity": hit.entity_type, "language": language},
+                        # start/end 是**偏移量**不是原文：脱敏执行层靠它按决策
+                        # 遮住实体（见 policy_engine.redactor 模块说明）。
+                        # 只写偏移量也让审计账本保持"不落明文"的姿态。
+                        metadata={
+                            "entity": hit.entity_type,
+                            "language": language,
+                            "start": hit.start,
+                            "end": hit.end,
+                        },
                     )
                 )
             return tuple(results)

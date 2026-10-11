@@ -526,3 +526,75 @@ class TestResolveLocalDir:
         explicit = tmp_path / "elsewhere"
         explicit.mkdir()
         assert _resolve_local_dir(explicit) == explicit
+
+# --- 脱敏区间契约 ----------------------------------------------------------
+
+
+class TestDetectionSpansAreExecutable:
+    """命中必须带**可执行的偏移量**。
+
+    B4 实测漏洞：Presidio 判出 PERSON、policy 判 redact，但执行层只认 C4
+    正则，于是 action=redact 而 changed=False，原文原样进了模型。修法是让
+    脱敏跟着决策走 —— 前提是检测器真的把区间交出来了。
+
+    这组用例锁的就是那个前提：**没有区间就没有脱敏**。
+    """
+
+    def test_metadata_carries_span_and_entity(self) -> None:
+        text = "客户张伟在北京办理业务"
+        start = text.index("张伟")
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit("PERSON", start, start + 2, 0.85, recognizer="SpacyRecognizer")]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert out[0].metadata["start"] == start
+        assert out[0].metadata["end"] == start + 2
+        assert out[0].metadata["entity"] == "PERSON"
+
+    def test_span_text_matches_the_evidence_mask(self) -> None:
+        """偏移量必须真的指向那个实体 —— 错位会静默截断用户内容。"""
+        text = "客户张伟在北京办理业务"
+        start = text.index("张伟")
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit("PERSON", start, start + 2, 0.85, recognizer="SpacyRecognizer")]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        meta = out[0].metadata
+        assert text[meta["start"] : meta["end"]] == "张伟"
+
+    def test_spans_survive_for_format_recognizers_too(self) -> None:
+        """格式类（邮箱）同样要带区间 —— 它们走正则脱敏，但不该是例外。"""
+        text = "联系邮箱chenxiaodong@example.com"
+        start = text.index("邮箱")
+        analyzer = _FakeAnalyzer(
+            [
+                _FakeAnalyzerHit(
+                    "EMAIL_ADDRESS", start, len(text), 1.0, recognizer="EmailRecognizer"
+                )
+            ]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        assert out[0].metadata["start"] == start
+        assert out[0].metadata["end"] == len(text)
+
+    def test_every_emitted_result_is_executable(self) -> None:
+        """把 policy_engine 的取区间函数直接拿来校验生产路径的产物。"""
+        from policy_engine.redactor import redactions_from_results
+
+        text = "客户张伟在北京办理业务，邮箱a@b.com"
+        start = text.index("张伟")
+        analyzer = _FakeAnalyzer(
+            [
+                _FakeAnalyzerHit("PERSON", start, start + 2, 0.85, recognizer="SpacyRecognizer"),
+                _FakeAnalyzerHit(
+                    "EMAIL_ADDRESS",
+                    text.index("a@b.com"),
+                    len(text),
+                    1.0,
+                    recognizer="EmailRecognizer",
+                ),
+            ]
+        )
+        out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+        spans = redactions_from_results(out)
+        assert len(spans) == len(out)

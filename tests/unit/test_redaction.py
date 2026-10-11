@@ -9,9 +9,16 @@ from __future__ import annotations
 import pytest
 
 from detector_rules.redactor import RegexRedactor, placeholder_for
-from guard_contract.enums import PolicyAction
+from guard_contract.enums import GuardStage, PolicyAction
+from guard_contract.result import DetectorResult
 from policy_engine.actions import BLOCKED_MESSAGE, apply_action
-from policy_engine.redactor import RedactionResult, Redactor
+from policy_engine.redactor import (
+    Redaction,
+    RedactionResult,
+    Redactor,
+    apply_redactions,
+    redactions_from_results,
+)
 
 VALID_CN_ID = "11010519491231002X"
 VALID_CARD = "4539578763621486"
@@ -180,3 +187,149 @@ class TestRedactionResult:
         assert result.changed is False
         assert result.kinds == ()
         assert result.counts() == {}
+
+
+# --- 决策驱动脱敏（B4 实测漏洞的回归） ---------------------------------------
+#
+# 这组用例对应的是一个**真实漏洞**：Presidio 判出 PERSON、policy 判 redact，
+# 但执行脱敏的 RegexRedactor 只认 C4 那 4 条正则，于是 action=redact 而
+# changed=False，原文原样进了模型又原样返回。
+#
+# 下面 test_redact_masks_entity_the_regex_redactor_cannot_see 就是当初该写、
+# 却因为"只测了 RegexRedactor 自己"而漏掉的那一条。
+
+
+def _pii_result(*, start: int, end: int, entity: str = "PERSON", detector: str = "pii.presidio"):
+    return DetectorResult(
+        detector=detector,
+        version="2.2.358",
+        stage=GuardStage.INPUT,
+        label="pii_leak",
+        score=0.85,
+        confidence=0.85,
+        evidence=(f"{entity}:{entity[:1]}***",),
+        metadata={"entity": entity, "start": start, "end": end},
+    )
+
+
+class TestRedactionsFromResults:
+    def test_extracts_span_and_entity_kind(self) -> None:
+        spans = redactions_from_results([_pii_result(start=4, end=6)])
+        assert len(spans) == 1
+        assert (spans[0].start, spans[0].end, spans[0].kind) == (4, 6, "PERSON")
+
+    def test_falls_back_to_label_when_entity_absent(self) -> None:
+        result = _pii_result(start=0, end=3).model_copy(
+            update={"metadata": {"start": 0, "end": 3}},
+        )
+        assert redactions_from_results([result])[0].kind == "pii_leak"
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            pytest.param({"entity": "PERSON"}, id="缺end"),
+            pytest.param({"entity": "PERSON", "start": 2}, id="缺start"),
+            pytest.param({"entity": "P", "start": 5, "end": 2}, id="区间倒置"),
+            pytest.param({"entity": "P", "start": -1, "end": 4}, id="起点为负"),
+            pytest.param({"entity": "P", "start": 3, "end": 3}, id="空区间"),
+            pytest.param({"entity": "P", "start": "1", "end": "4"}, id="字符串偏移"),
+            pytest.param({"entity": "P", "start": True, "end": 4}, id="bool偏移"),
+        ],
+    )
+    def test_malformed_spans_are_skipped(self, metadata: dict) -> None:
+        """宁可少遮也不能错位：偏移量非法时跳过，别拿它去切片。
+
+        用错位的偏移量切片会**静默截断用户内容**，比漏遮更难发现。
+        """
+        result = _pii_result(start=0, end=1).model_copy(update={"metadata": metadata})
+        assert redactions_from_results([result]) == ()
+
+    def test_empty_results_yield_nothing(self) -> None:
+        assert redactions_from_results([]) == ()
+
+
+class TestDecisionDrivenRedaction:
+    def test_redact_masks_entity_the_regex_redactor_cannot_see(
+        self, redactor: RegexRedactor
+    ) -> None:
+        """**这条用例对应真实漏洞**：中文人名只有 Presidio 能认，
+        RegexRedactor 完全看不见它。修复前这里会 changed=False。
+        """
+        text = "请帮我确认客户张伟的账户信息"
+        name_start, name_end = 7, 9
+        assert text[name_start:name_end] == "张伟"
+
+        outcome = apply_action(
+            PolicyAction.REDACT,
+            text,
+            redactor=redactor,
+            results=[_pii_result(start=name_start, end=name_end)],
+        )
+
+        assert outcome.changed is True
+        assert "张伟" not in outcome.text
+        assert placeholder_for("PERSON") in outcome.text
+        # 不该把整段打码 —— 精确到实体
+        assert "请帮我确认客户" in outcome.text
+
+    def test_regex_and_detector_spans_are_merged(self, redactor: RegexRedactor) -> None:
+        """C4 正则与 Presidio 同时命中：两处都要遮。"""
+        text = f"手机 {VALID_CN_ID} 客户张伟"
+        idx = text.index("张伟")
+        outcome = apply_action(
+            PolicyAction.REDACT,
+            text,
+            redactor=redactor,
+            results=[_pii_result(start=idx, end=idx + 2)],
+        )
+        assert VALID_CN_ID not in outcome.text
+        assert "张伟" not in outcome.text
+
+    def test_overlapping_regex_and_detector_spans_do_not_double_mask(
+        self, redactor: RegexRedactor
+    ) -> None:
+        """同一段文字被两条路径命中：只遮一次，且不留嵌套占位符。"""
+        text = f"身份证 {VALID_CN_ID}"
+        start = text.index(VALID_CN_ID)
+        outcome = apply_action(
+            PolicyAction.REDACT,
+            text,
+            redactor=redactor,
+            results=[_pii_result(start=start, end=start + len(VALID_CN_ID), entity="CN_ID")],
+        )
+        assert outcome.text.count(placeholder_for("CN_ID")) == 1
+        assert VALID_CN_ID not in outcome.text
+
+    def test_results_are_ignored_for_non_redact_actions(
+        self, redactor: RegexRedactor
+    ) -> None:
+        """allow 不该因为带了 results 就去改文本。"""
+        text = "请帮我确认客户张伟的账户信息"
+        outcome = apply_action(
+            PolicyAction.ALLOW, text, redactor=redactor, results=[_pii_result(start=7, end=9)]
+        )
+        assert outcome.text == text
+        assert outcome.changed is False
+
+    def test_redact_with_no_results_keeps_regex_behaviour(
+        self, redactor: RegexRedactor
+    ) -> None:
+        """不传 results 时行为与修复前一致 —— C4 正则照常工作。"""
+        outcome = apply_action(PolicyAction.REDACT, f"身份证 {VALID_CN_ID}", redactor=redactor)
+        assert VALID_CN_ID not in outcome.text
+
+
+class TestApplyRedactions:
+    def test_multiple_replacements_keep_offsets_aligned(self) -> None:
+        text = "张伟和李娜都是客户"
+        # 张伟 = [0,2)，李娜 = [3,5)
+        result = apply_redactions(
+            text,
+            [Redaction("PERSON", 0, 2), Redaction("PERSON", 3, 5)],
+        )
+        assert result.text == f"{placeholder_for('PERSON')}和{placeholder_for('PERSON')}都是客户"
+
+    def test_empty_input_is_a_noop(self) -> None:
+        assert apply_redactions("", []).text == ""
+        assert apply_redactions("abc", []).text == "abc"
+        assert apply_redactions("abc", []).changed is False
