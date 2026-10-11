@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 import urllib.error
@@ -138,6 +139,120 @@ def attribute(body: dict[str, Any]) -> tuple[str, str | None, str]:
     return body["action"], "unknown", ""
 
 
+#: 证据里的实体类型 → 这类东西**本来就不该**在输出侧被当成 PII。
+#:
+#: 分类口径回答的是一个具体问题：输出侧的 PII 检测，遮掉的到底是
+#: 「真 PII」还是「模型自己写的正常内容」。前者该留，后者是误报。
+#: 只知道遮了多少次没用 —— 遮掉身份证和遮掉「kb-05」，修法完全不同。
+EVIDENCE_KINDS: dict[str, str] = {
+    "CN_ID": "real_pii",
+    "CREDIT_CARD": "real_pii",
+    "PHONE_NUMBER": "real_pii",
+    "EMAIL_ADDRESS": "real_pii",
+    "IBAN_CODE": "real_pii",
+    "LOCATION": "address_or_time",
+    "DATE_TIME": "address_or_time",
+    "PERSON": "person_name",
+    "NRP": "person_name",
+    "ORGANIZATION": "person_name",
+    "DATE": "address_or_time",
+    "TIME": "address_or_time",
+}
+
+#: 实体类型之外的兜底：识别标识符形态（``kb-05`` 这类文档出处标记）。
+_IDENTIFIER = re.compile(r"^[A-Za-z]{1,4}[-_]\d{1,4}$")
+
+#: 规则命中标签 → 「这条规则在输出侧到底在防什么」
+LABEL_KINDS: dict[str, str] = {
+    "prompt_injection": "attack_phrase",
+    "system_prompt_leak": "attack_phrase",
+    "harmful_content": "attack_phrase",
+    "pii_leak": "pii_entity",
+    "encoding_obfuscation": "obfuscation",
+    "dangerous_tool_call": "dangerous_phrase",
+}
+
+
+def classify_evidence(evidence: list[str], labels: list[str]) -> list[dict[str, str]]:
+    """把一次命中的证据归成「被误伤的东西的种类」。
+
+    Presidio 命中在账本里是脱敏过的（``[REDACTED:LOCATION]``），但**实体类型
+    是保留的** —— 而实体类型恰好就是分类所需的全部信息：它告诉你遮掉的
+    是地址、是人名，还是身份证号。L1 规则命中则是明文片段，直接按标签归类。
+
+    返回空列表表示这次命中没有可用证据（例如 fail-closed）。
+    """
+    if labels:
+        kind = LABEL_KINDS.get(labels[0], "other")
+        if kind == "pii_entity":
+            kinds = []
+            for ev in evidence:
+                m = re.search(r"\[REDACTED:([A-Z_]+)\]", ev)
+                if m:
+                    kinds.append(EVIDENCE_KINDS.get(m.group(1), m.group(1)))
+                elif _IDENTIFIER.match(ev.strip()):
+                    kinds.append("identifier")
+                else:
+                    kinds.append("unclassified_pii")
+            # 去重保序
+            seen: dict[str, None] = {}
+            for k in kinds:
+                seen.setdefault(k, None)
+            return [{"kind": k, "evidence": ""} for k in seen]
+        return [{"kind": kind, "evidence": evidence[0][:60] if evidence else ""}]
+    return []
+
+
+def load_ledger_index(path: Path) -> dict[str, list[dict[str, Any]]]:
+    """按 request_id 索引审计账本。
+
+    **只取自己这次采样打出来的请求**（按 request_id 精确匹配），所以账本里
+    混着的 L2/L3 功能测试攻击流量不影响这里 —— 之前"不能用账本算误报率"
+    那条顾虑针对的是全量统计，不适用于按 id 精确回查。
+    """
+    index: dict[str, list[dict[str, Any]]] = {}
+    if not path.is_file():
+        return index
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        index.setdefault(rec.get("request_id", ""), []).append(rec)
+    return index
+
+
+def attach_evidence(
+    samples: list[dict[str, Any]], ledger_path: Path
+) -> dict[str, dict[str, int]]:
+    """把账本里的命中证据回填到样本上，并汇总成一张分布表。
+
+    返回的键形如 ``"output/redact_pii · person_name"``，值是次数。
+    """
+    index = load_ledger_index(ledger_path)
+    summary: dict[str, int] = {}
+    for s in samples:
+        rid = s.get("request_id") or ""
+        hits: list[dict[str, Any]] = []
+        for rec in index.get(rid, []):
+            if rec.get("action") == "allow":
+                continue
+            hits.append(rec)
+        s["evidence"] = [e for rec in hits for e in (rec.get("evidence") or [])]
+        s["hit_labels"] = sorted(
+            {lab for rec in hits for lab in (rec.get("hit_labels") or [])}
+        )
+        s["detectors"] = sorted(
+            {d for rec in hits for d in (rec.get("detectors") or [])}
+        )
+        stage = (s.get("attribution") or "").split(":")[0] or "unknown"
+        rule = s.get("rule_name") or "none"
+        for item in classify_evidence(s["evidence"], s["hit_labels"]):
+            key = f"{stage}/{rule} · {item['kind']}"
+            summary[key] = summary.get(key, 0) + 1
+    return dict(sorted(summary.items(), key=lambda kv: -kv[1]))
+
+
 def run_round(base: str, round_no: int, timeout: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for case in CORPUS:
@@ -150,6 +265,7 @@ def run_round(base: str, round_no: int, timeout: float) -> list[dict[str, Any]]:
                     "id": case["id"],
                     "round": round_no,
                     "text": case["text"],
+                    "request_id": "",
                     "action": "error",
                     "attribution": "transport",
                     "rule_name": "",
@@ -166,6 +282,7 @@ def run_round(base: str, round_no: int, timeout: float) -> list[dict[str, Any]]:
                 "id": case["id"],
                 "round": round_no,
                 "text": case["text"],
+                "request_id": body.get("request_id", ""),
                 "action": action,
                 "attribution": attribution,
                 "rule_name": rule,
@@ -183,7 +300,11 @@ def run_round(base: str, round_no: int, timeout: float) -> list[dict[str, Any]]:
 
 
 def build_report(
-    base: str, rounds: int, samples: list[dict[str, Any]], health: dict[str, Any]
+    base: str,
+    rounds: int,
+    samples: list[dict[str, Any]],
+    health: dict[str, Any],
+    evidence_summary: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     per_round: list[dict[str, Any]] = []
     for r in range(1, rounds + 1):
@@ -282,6 +403,7 @@ def build_report(
             "per_round": per_round,
         },
         "attribution": dict(sorted(attribution_totals.items(), key=lambda kv: -kv[1])),
+        "evidence_summary": evidence_summary or {},
         "fail_closed_count": fail_closed,
         "quarantined_documents": quarantines,
         "per_case": per_case,
@@ -329,6 +451,13 @@ def render(report: dict[str, Any]) -> str:
         for k, v in report["attribution"].items():
             add(f"    {k:<34} {v}")
 
+    if report.get("evidence_summary"):
+        add("")
+        add("  命中证据分类（决定「哪些该在输出侧查」的依据）:")
+        add(f"    {'检测点/规则 · 误伤的东西':<46} 次数")
+        for k, v in report["evidence_summary"].items():
+            add(f"    {k:<48} {v}")
+
     add("")
     add("  逐条稳定性（always_ok / flaky / always_bad）:")
     for c in report["per_case"]:
@@ -355,6 +484,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--rounds", type=int, default=DEFAULT_ROUNDS, help="每条问题跑几轮"
     )
     parser.add_argument("--timeout", type=float, default=180.0, help="单次请求超时秒")
+    parser.add_argument(
+        "--ledger",
+        default=None,
+        help=(
+            "审计账本路径，用于把命中证据回填并分类。给出后会多出一节"
+            "「命中证据分类」—— 那张表是判断「哪些东西根本不该在输出侧查」"
+            "的直接依据。不给则该节为空。"
+        ),
+    )
     parser.add_argument("--out", default=None, help="报告 JSON 落盘路径")
     parser.add_argument("--json", action="store_true", help="只输出 JSON")
     args = parser.parse_args(argv)
@@ -373,7 +511,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[fp_baseline] 第 {r}/{args.rounds} 轮 …", file=sys.stderr)
         samples.extend(run_round(args.base_url, r, args.timeout))
 
-    report = build_report(args.base_url, args.rounds, samples, health)
+    evidence: dict[str, int] = {}
+    if args.ledger:
+        evidence = attach_evidence(samples, Path(args.ledger))
+        print(f"[fp_baseline] 已回填证据并分类: {len(evidence)} 类", file=sys.stderr)
+
+    report = build_report(args.base_url, args.rounds, samples, health, evidence)
     if args.out:
         p = Path(args.out)
         p.parent.mkdir(parents=True, exist_ok=True)
