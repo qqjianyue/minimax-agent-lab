@@ -35,6 +35,9 @@ from detector_ml.presidio_pii import (
     ZH_MODEL,
     PresidioPiiDetector,
     detect_language,
+    is_cjk_fragment,
+    is_surname_initial,
+    looks_like_false_positive,
     passes_shape_filter,
 )
 from detector_ml.registry import DetectorRegistry
@@ -62,6 +65,9 @@ __all__ = [
     "ZH_MODEL",
     "DetectorRegistry",
     "detect_language",
+    "is_cjk_fragment",
+    "is_surname_initial",
+    "looks_like_false_positive",
     "passes_shape_filter",
     "run_detector_with_timeout",
 ]

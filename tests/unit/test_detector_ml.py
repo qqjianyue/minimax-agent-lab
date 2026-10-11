@@ -27,7 +27,12 @@ from detector_ml.embedding_similarity import LABEL_INJECTION
 from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT
 from detector_ml.presidio_pii import (
     LABEL_PII,
+    LANG_EN,
+    LANG_ZH,
     detect_language,
+    is_cjk_fragment,
+    is_surname_initial,
+    looks_like_false_positive,
     passes_shape_filter,
 )
 from detector_ml.timeout import run_detector_with_timeout
@@ -598,3 +603,178 @@ class TestDetectionSpansAreExecutable:
         out = PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
         spans = redactions_from_results(out)
         assert len(spans) == len(out)
+
+
+# --- 形态误报判定（D2，v0.1.17） ---------------------------------------------
+
+
+class TestIsCjkFragment:
+    def test_chinese_fragment(self) -> None:
+        assert is_cjk_fragment("卡需") is True
+
+    def test_english_fragment(self) -> None:
+        assert is_cjk_fragment("sking") is False
+
+    def test_empty(self) -> None:
+        assert is_cjk_fragment("") is False
+
+
+class TestIsSurnameInitial:
+    @pytest.mark.parametrize("name", ["张伟", "李娜", "王芳", "陈国强", "赵敏"])
+    def test_common_surnames(self, name: str) -> None:
+        assert is_surname_initial(name) is True
+
+    @pytest.mark.parametrize("name", ["欧阳", "司马", "上官"])
+    def test_compound_surnames(self, name: str) -> None:
+        """只查首字会把复姓误杀 —— 必须再认一遍两字姓。"""
+        assert is_surname_initial(name) is True
+
+    @pytest.mark.parametrize("frag", ["卡需", "普卡", "贷款金额"])
+    def test_banking_fragments_are_not_surnames(self, frag: str) -> None:
+        assert is_surname_initial(frag) is False
+
+    def test_empty(self) -> None:
+        assert is_surname_initial("") is False
+
+
+class TestLooksLikeFalsePositive:
+    """这三条规则都是在真实输出上量化出来的，不是拍脑袋 —— 详见
+    presidio_pii 模块 docstring 里那张对比表。"""
+
+    def test_salary_like_fragment_dropped_in_chinese_doc(self) -> None:
+        """``卡需``（银行卡需要）—— 业务词表按完全包含匹配，抓不到这种切法。"""
+        assert looks_like_false_positive(
+            "卡需", entity_type="PERSON", doc_language=LANG_ZH
+        ) is True
+
+    def test_real_name_kept_in_chinese_doc(self) -> None:
+        assert (
+            looks_like_false_positive("张伟", entity_type="PERSON", doc_language=LANG_ZH)
+            is False
+        )
+
+    def test_english_fragment_in_english_doc_is_untouched(self) -> None:
+        """纯英文文档里的英文人名不能被中文规则干掉（否则等于关掉英文检测）。"""
+        assert (
+            looks_like_false_positive(
+                "John Smith", entity_type="PERSON", doc_language=LANG_EN
+            )
+            is False
+        )
+
+    def test_english_fragment_in_chinese_doc_still_dropped(self) -> None:
+        """文档是中文时，英文碎片要照丢 —— 纯片段级方案就是漏了这一条。"""
+        assert (
+            looks_like_false_positive("inquiry about", entity_type="PERSON", doc_language=LANG_ZH)
+            is True
+        )
+
+    def test_chinese_fragment_in_english_doc_now_filtered(self) -> None:
+        """**这条是 D2 的核心**：中英混排时整段判 en，之前的实现对整段关闭了
+        形态过滤，英文模型对中文的乱标全漏了。"""
+        # 命中业务词，所以形态规则能收掉 —— 说明 gate 确实作用到了 en 文档
+        assert (
+            looks_like_false_positive("外币定期", entity_type="LOCATION", doc_language=LANG_EN)
+            is True
+        )
+
+    def test_known_gap_long_location_in_english_doc_survives(self) -> None:
+        """**已知残留缺口，如实钉住**：英文文档里一个既不含业务词、又没留下
+        切分痕迹（不以空白收尾）的中文长片段，目前拦不住。
+
+        语料里那条 ``贷款金额和担保方式\\n`` 能被挡住，靠的是结尾的换行而不是
+        规则本身。不按长度砍是因为真实地址可以很长
+        （``北京市朝阳区建国路88号`` 11 字）。**测出来是 0 残留，不是设计上
+        保证 0** —— 这条用例就是为了别让后来人误以为已经彻底了。
+        """
+        assert (
+            looks_like_false_positive(
+                "贷款金额和担保方式", entity_type="LOCATION", doc_language=LANG_EN
+            )
+            is False
+        )
+
+    def test_trailing_whitespace_marks_bad_segmentation(self) -> None:
+        assert (
+            looks_like_false_positive(
+                "贷款金额和担保方式\n", entity_type="LOCATION", doc_language=LANG_EN
+            )
+            is True
+        )
+
+    def test_long_real_address_is_not_dropped(self) -> None:
+        """不能按长度砍：真实地址可以很长（11 字）。"""
+        assert (
+            looks_like_false_positive(
+                "北京市朝阳区建国路88号", entity_type="LOCATION", doc_language=LANG_ZH
+            )
+            is False
+        )
+
+    def test_surname_rule_does_not_apply_to_locations(self) -> None:
+        """地名不按姓氏判 —— ``深圳`` 首字不是姓，但它是真地名。"""
+        assert (
+            looks_like_false_positive("深圳", entity_type="LOCATION", doc_language=LANG_ZH)
+            is False
+        )
+
+    def test_person_next_to_business_term_is_kept(self) -> None:
+        """**上下文窗口方案会在这里误杀** ``李娜``（旁边 6 字内有"网点"）。
+
+        PII 漏报比误报严重，所以明确锁住"不因邻近业务词丢弃人名"。
+        """
+        assert (
+            looks_like_false_positive("李娜", entity_type="PERSON", doc_language=LANG_ZH)
+            is False
+        )
+
+    @pytest.mark.parametrize("frag", ["📈", "🏦", "⏱️"])
+    def test_emoji_is_never_pii_in_any_language(self, frag: str) -> None:
+        """纯图标不可能是人名地名 —— 与文档语言无关，所以放在适用性判断之前。
+
+        实测英文文档里 ``📈`` 被英文模型判成 LOCATION 放行过。
+        """
+        assert (
+            looks_like_false_positive(frag, entity_type="LOCATION", doc_language=LANG_EN)
+            is True
+        )
+
+    def test_known_gap_country_name_in_english_doc_survives(self) -> None:
+        """**已知残留缺口，如实钉住**：英文文档里 ``China`` 这类地名会被判成
+        LOCATION 并遮掉。加"国家/城市名不算 PII"的规则会直接误伤真实的
+        地名型 PII（地址就含地名），所以不做 —— 记下来而不是硬凑。
+        """
+        assert (
+            looks_like_false_positive("China", entity_type="LOCATION", doc_language=LANG_EN)
+            is False
+        )
+
+
+class TestDetectorAppliesShapeGate:
+    """把 gate 接进 detector 的端到端契约（Fake analyzer 注入）。"""
+
+    def _detect(self, text: str, entity: str, start: int, end: int) -> tuple:
+        analyzer = _FakeAnalyzer(
+            [_FakeAnalyzerHit(entity, start, end, 0.85, recognizer="SpacyRecognizer")]
+        )
+        return PresidioPiiDetector(analyzer=analyzer).detect(text, stage=GuardStage.OUTPUT)
+
+    def test_banking_fragment_is_dropped(self) -> None:
+        text = "办理银行卡需要提供身份证"
+        assert self._detect(text, "PERSON", text.index("卡需"), text.index("卡需") + 2) == ()
+
+    def test_real_name_survives(self) -> None:
+        text = "客户张伟的账户信息"
+        out = self._detect(text, "PERSON", text.index("张伟"), text.index("张伟") + 2)
+        assert len(out) == 1
+
+    def test_chinese_fragment_in_english_doc_is_dropped(self) -> None:
+        """整段英文（判 en）里夹的中文碎片要被清掉。"""
+        text = "Please review the 外币定期 carefully"
+        start = text.index("外币定期")
+        assert self._detect(text, "LOCATION", start, start + 4) == ()
+
+    def test_language_is_still_reported_for_audit(self) -> None:
+        text = "客户张伟的账户信息"
+        out = self._detect(text, "PERSON", text.index("张伟"), text.index("张伟") + 2)
+        assert out[0].metadata["language"] == LANG_ZH

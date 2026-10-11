@@ -33,23 +33,47 @@
 
 关卡 0 的 18 条语料上，lg 裸跑误报 66.7% → 过滤后 **0%**、召回保持 **100%**。
 
-## ⚠️ 那个 0% 后来被真实流量证伪（v0.1.15 部署后）
+## ⚠️ 那个 0% 后来被真实流量证伪，又被重新做对（v0.1.15 → v0.1.17）
 
-在目标机走**真实 ``/chat``** 跑 12 条业务提问，过滤后仍残留 **4/12 = 33.3%**
-误报，和修复前的英文基线基本持平。根因是**过滤开关绑在文档级语言上**：
-:func:`detect_language` 判的是**整段**语言，而模型输出常常是英文表格骨架里
-嵌中文单元格，``latin >= han`` 整段判成 ``en``，形态过滤于是按设计整体关闭，
-英文模型转头对中文乱标 —— ``'外币定期、活期等'``、
-``'完成审批\\n- 简单小额贷款甚至可以当日放款'``、单个 ``'！'``
-都被当成 LOCATION / PERSON。
+**v0.1.15 部署后走真实 ``/chat`` 复测，残留误报 4/12 = 33.3%**，与修复前的
+英文基线持平。根因不是过滤器写错，是**判定的粒度错了**：过滤开关绑在
+:func:`detect_language` 判出的**文档级**语言上，而模型输出常常英文表格骨架里
+嵌中文单元格，``latin >= han`` 整段判 ``en``，形态过滤按设计整体关闭。
 
-同一个 :func:`detect_language` 在**纯中文**长文本上是正确的（实测 685 字里
-han=484 / latin=13，判 zh），所以计数没写错，错的是**判定粒度**：该按
-**片段**判语言，不该按**文档**判。
+拿到**未脱敏**的原始输出后重新量化（20 条真实模型输出 + 9 个真实体），
+比较了几种改法 —— **其中两种被实测否掉，值得记下来**：
 
-**教训**：18 条语料上的 0% 是**对自己选的测试集的拟合**。业务词表也是看着
-这 18 条的失败样本写的，两者互相加固，强化的是错觉而不是结论。
-用于生产前应扩到 200 条人工标注语料重新校准。
+| 方案 | 残留误报 | 真实体保留 |
+|---|---|---|
+| 文档级语言（原实现） | 3 | 9/9 |
+| 纯片段级（只看片段含不含汉字） | **10** | 9/9 |
+| 上下文窗口内出现业务词即丢弃 | 3 | **8/9** ❌ |
+| **片段 OR 文档级 + 姓氏先验 + 空白收尾** | **0** | **9/9** |
+
+⚠️ 那个 0 是**在这 20 条上测出来的**，不是设计上保证的。已知残留缺口：
+英文文档里一个既不含业务词、又没留下切分痕迹（不以空白收尾）的中文长片段
+仍然漏网 —— 语料里那条能挡住靠的是结尾的换行。不按长度砍是因为真实地址
+可以很长。这条缺口由 ``tests/unit/test_detector_ml.py`` 的
+``test_known_gap_long_location_in_english_doc_survives`` 钉住。
+
+1. **"只按片段判语言"是错的**：它会在中文文档里把英文碎片放回去
+   （``inquiry about`` / ``typical`` / 🏦），残留从 3 涨到 10。
+   正确做法是**并集** —— 文档判中文 **或** 片段含汉字，才启用形态规则。
+2. **上下文窗口匹配是有害的**：它能把真人名误杀 —— ``李娜`` 旁边 6 字内
+   出现"网点"，于是被判成业务词丢弃。**PII 的漏报比误报严重得多**，
+   所以最后**没有**用它。
+3. **真正管用的是姓氏先验**：``卡需`` / ``普卡`` 之所以漏网，是因为
+   ``term in fragment`` 要求业务词完全落在片段内，而 NER 把"银行卡需要"
+   切成什么长度不受控。姓氏是**有界**的先验 —— 几百个姓覆盖近乎全部人口，
+   不随业务上新而失效，58 条业务词里有 29 条在这批语料里根本没出现过。
+
+## 教训
+
+两次栽在同一个坑里：v0.1.13 是"绿色检查 ≠ 检查真的跑过"，这次是
+"**自选语料上的好成绩 ≠ 线上表现**"。18 条语料上的 0% 是对自己选的测试集的
+拟合 —— 业务词表又是看着这 18 条的失败样本写的，两者互相加固，强化的是错觉。
+**度量必须走真实入口，且必须拿到未经后处理修饰的原始输出**（第一版语料存的是
+已脱敏的响应，误报片段早被 ``[REDACTED:PERSON]`` 替换掉了，分析等于分析空气）。
 
 重依赖策略（决策 D2 / D7）：presidio-analyzer + spacy + spacy-pkuseg 只在
 **目标机 venv** 安装（``--extra ml`` + ``infra/spacy/setup.sh install``）。
@@ -175,6 +199,35 @@ _BUSINESS_TERMS = frozenset(
     }
 )
 
+#: 常见单姓（百家姓前列，覆盖绝大多数汉族人）。
+#:
+#: **为什么需要它**：形态过滤原本靠业务词表兜底，但 NER 的切分并不稳定 ——
+#: 同一个"银行卡需要"可能被切成"卡"/"卡需"/"银行卡需"，而 ``term in fragment``
+#: 要求业务词**完全落在片段内**，于是词表再长也追不上这种切法（实测 58 条
+#: 业务词里只有 39 条在本批真实语料里出现过）。
+#:
+#: 姓氏是另一类先验：它**有界**（几百个姓覆盖近乎全部人口）、**可枚举**、
+#: 且不随业务变化而失效 —— ``卡需`` / ``普卡`` 的首字都不是姓，无论银行
+#: 再上多少新产品都拦得住。
+_SURNAMES = frozenset(
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜"
+    "戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳酆鲍史唐"
+    "费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄"
+    "和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁"
+    "杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍"
+    "虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石崔吉钮龚"
+)
+
+#: 复姓。只查首字会误杀"欧阳""司马"这类，所以单姓之外再认一遍两字姓。
+_COMPOUND_SURNAMES = frozenset(
+    {
+        "欧阳", "司马", "上官", "诸葛", "东方", "独孤", "南宫", "闻人",
+        "夏侯", "皇甫", "尉迟", "公羊", "澹台", "公冶", "宗政", "濮阳",
+        "淳于", "太叔", "申屠", "公孙", "仲孙", "轩辕", "令狐", "钟离",
+        "宇文", "长孙", "慕容", "鲜于", "闾丘", "司徒", "司空", "第五",
+    }
+)
+
 
 def _mask(fragment: str) -> str:
     """把实体原文压成 `首字符 + ***`，不落明文。"""
@@ -190,12 +243,22 @@ def _is_han(ch: str) -> bool:
 
 
 def _is_emoji(ch: str) -> bool:
+    """图标 / 符号 / 变体选择符。
+
+    范围比"emoji 码表"宽是故意的：模型输出里的"图表"大多是符号类字符
+    （▶ ● ⏱ ⏸ 〽 …），把范围卡死在 1F300+ 之类的码段上会漏掉
+    ``⏱️``（U+23F1 + U+FE0F）这类实际高频的写法 —— 实测就漏过一次。
+    """
     code = ord(ch)
     return (
         0x1F000 <= code <= 0x1FAFF
         or 0x2600 <= code <= 0x27BF
         or 0x2190 <= code <= 0x21FF
         or 0x2B00 <= code <= 0x2BFF
+        or 0x2300 <= code <= 0x23FF  # ⏱⏲⏸⏹⏺ 等技术符号
+        or 0x25A0 <= code <= 0x25FF  # ▶ ● ■ 等几何图形
+        or code in (0x3030, 0x303D)  # 〰〽
+        or 0xFE00 <= code <= 0xFE0F  # 变体选择符（⏱️ 的那个️）
     )
 
 
@@ -218,11 +281,34 @@ def detect_language(text: str) -> str:
     return LANG_EN
 
 
+def is_cjk_fragment(fragment: str) -> bool:
+    """片段**本身**是否含汉字。
+
+    与 :func:`detect_language` 的区别是关键：那个判的是**整段**的主语言，
+    决定用哪个 spaCy 模型；这个判的是**片段**用什么文字，决定形态规则要不要
+    作用在它身上。两者粒度不同，不能互相替代。
+    """
+    return any(_is_han(ch) for ch in fragment)
+
+
+def is_surname_initial(fragment: str) -> bool:
+    """片段是否以常见汉姓开头（单姓或复姓）。
+
+    ⚠️ **已知代价**：音译的外文人名（``约翰``/``迈克``）不在姓氏表里，
+    会被当成误报丢弃。中文语境下的银行客服场景里这类写法罕见，
+    选了这条取舍 —— 漏一个音译名，好过放行 ``卡需``/``普卡`` 这类
+    每天都在发生的误报。
+    """
+    if not fragment:
+        return False
+    return fragment[0] in _SURNAMES or fragment[:2] in _COMPOUND_SURNAMES
+
+
 def passes_shape_filter(fragment: str) -> bool:
     """该实体片段是否"像中文人名 / 地名"。
 
     故意**不判断真假** —— 分数区分不了（误报与真命中同为 0.85），
-    这里只做形态筛查，四条规则任一不满足即丢弃：
+    这里只做形态筛查，五条规则任一不满足即丢弃：
 
     1. 至少 2 个汉字（单字片段基本是分词产物；中文人名极少单字）
     2. 不含 emoji / 图标 —— 模型爱在回答里放 🏦 ⏱️，中文 NER 不该对它们有反应
@@ -230,6 +316,10 @@ def passes_shape_filter(fragment: str) -> bool:
        与中英混排碎片（方App / TF代销）。**数字不挡**：门牌号是正常地址的一部分
        （建国路88号），第一版把数字一并挡掉，把整条地址误杀了
     4. 不含金融业务词 —— 产品名与术语（如费率、代销）会被当成人名
+    5. **不以空白 / 换行收尾** —— 真实人名地名不会以空格结尾，这是 NER
+       切分毛躁的可靠信号（实测拦下 ``贷款金额和担保方式\\n``）。
+       刻意**不加长度上限**：真实地址可以很长（``北京市朝阳区建国路88号``
+       11 字），按长度砍会误杀整条地址
     """
     if sum(1 for ch in fragment if _is_han(ch)) < 2:
         return False
@@ -237,7 +327,36 @@ def passes_shape_filter(fragment: str) -> bool:
         return False
     if any(ch.isascii() and ch.isalpha() for ch in fragment):
         return False
+    if fragment[-1:].isspace():
+        return False
     return not any(term in fragment for term in _BUSINESS_TERMS)
+
+
+def looks_like_false_positive(fragment: str, *, entity_type: str, doc_language: str) -> bool:
+    """这条 NER 命中是不是形态误报。
+
+    三条规则任一成立即丢弃：
+
+    1. **适用性**：文档判成中文，**或**片段本身含汉字。两条都满足才管。
+       只认文档语言会让中英混排的输出整段逃逸（实测模型输出里 han/latin
+       常在 0.37~0.61 之间，整段判 en 并不罕见）；只认片段又会在中文文档里
+       放回英文碎片（实测 ``inquiry about`` / ``typical`` / 🏦 就是这么漏的）。
+    2. **形态**：片段不像中文人名地名（:func:`passes_shape_filter` 的反面）
+    3. **姓氏先验**：``PERSON`` 但首字不是常见汉姓
+
+    第 3 条刻意**不用上下文窗口**：实测里它会把真人名误杀 ——
+    ``李娜`` 旁边 6 字内出现"网点"，于是被当成业务词丢弃。
+    **PII 的漏报比误报严重得多**，宁可不加这条。
+    """
+    # 纯图标片段不可能是人名或地名，**与语言无关**，所以放在适用性判断之前。
+    # 模型很爱在回答里放 📈 🏦 ⏱️，实测这在英文文档里也会漏（'📈' 被判成 LOCATION）。
+    if fragment and all(_is_emoji(ch) for ch in fragment):
+        return True
+    if not (doc_language == LANG_ZH or is_cjk_fragment(fragment)):
+        return False
+    if not passes_shape_filter(fragment):
+        return True
+    return entity_type == "PERSON" and not is_surname_initial(fragment)
 
 
 def _is_ner_hit(hit: Any) -> bool:
@@ -368,9 +487,13 @@ class PresidioPiiDetector:
             results: list[DetectorResult] = []
             for hit in hits:
                 fragment = text[hit.start : hit.end]
-                # 形态过滤只作用于中文 NER。英文侧的"形态"就是字母，
-                # 拿中文规则去筛会把 John Smith 全杀掉 —— 等于关掉英文检测。
-                if language == LANG_ZH and _is_ner_hit(hit) and not passes_shape_filter(fragment):
+                # 形态误报过滤只作用于 NER 产出：格式类（邮箱/手机号）靠正则与
+                # 校验位，命中天然可信，被"中文形态"规则误杀就本末倒置了。
+                if _is_ner_hit(hit) and looks_like_false_positive(
+                    fragment,
+                    entity_type=hit.entity_type,
+                    doc_language=language,
+                ):
                     continue
                 results.append(
                     DetectorResult(
@@ -410,5 +533,8 @@ __all__ = [
     "SUPPORTED_LANGUAGES",
     "ZH_MODEL",
     "detect_language",
+    "is_cjk_fragment",
+    "is_surname_initial",
+    "looks_like_false_positive",
     "passes_shape_filter",
 ]
