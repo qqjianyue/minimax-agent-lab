@@ -143,11 +143,11 @@ JD 的核心是 **Guardrail Platform** —— 把 AI 安全检查变成可复用
 
 #### 产出物
 
-* [ ] 本地可运行的 Agent 脚本/项目
+* [x] 本地可运行的 Agent 脚本/项目
 
-* [ ] 支持至少 2 个工具调用
+* [x] 支持至少 2 个工具调用
 
-* [ ] 一次完整运行的输入输出示例（保存为日志）
+* [x] 一次完整运行的输入输出示例（保存为日志）
 
 * [ ] Agent 架构简图（手绘或文字描述即可，阶段 5 会精修）
 
@@ -167,13 +167,13 @@ JD 的核心是 **Guardrail Platform** —— 把 AI 安全检查变成可复用
 
 #### 验收标准
 
-* [ ] 运行 `python agent.py`（或等效命令），Agent 能响应用户问题并调用工具
+* [x] 运行 `python agent.py`（或等效命令），Agent 能响应用户问题并调用工具
 
-* [ ] MiniMax API 调用成功，返回合理结果
+* [x] MiniMax API 调用成功，返回合理结果
 
-* [ ] 至少完成 3 轮不同场景的完整对话测试并保存日志
+* [x] 至少完成 3 轮不同场景的完整对话测试并保存日志
 
-* [ ] 代码结构清晰，预留了输入前、工具调用前、输出前的 hook 接口
+* [x] 代码结构清晰，预留了输入前、工具调用前、输出前的 hook 接口
 
 ---
 
@@ -228,13 +228,22 @@ JD 的核心是 **Guardrail Platform** —— 把 AI 安全检查变成可复用
 
 #### 产出物
 
-* [ ] Agent 每次运行都有完整 trace 记录
+* [x] Agent 每次运行都有完整 trace 记录 —— 六层 span（`agent.request` / `input_guard` / `llm_call` / `tool_guard` / `tool_call` / `output_guard`），目标机实测。**由 `tests/smoke/test_l2_trace_acceptance.py` 在每次部署时自动断言**，不再靠人眼看。
 
-* [ ] 至少 5 个关键指标可被查看
+* [x] 至少 5 个关键指标可被查看 —— 质量 4 项 / 性能 5 项 / 成本 4 项 / 安全 5 项，共 18 项，字段与口径见 [`docs/metrics.md`](docs/metrics.md)。
 
-* [ ] 一个基础 dashboard 或指标汇总视图
+* [x] 一个基础 dashboard 或指标汇总视图 —— `scripts/phoenix_metrics.py`，一条命令给出全部指标。
 
-* [ ] 指标定义文档（字段、口径、采集方式）
+* [x] 指标定义文档（字段、口径、采集方式）—— [`docs/metrics.md`](docs/metrics.md)，含**已知盲区**章节。
+
+> **为什么用脚本而不是 UI 视图**：验收标准里有一句很具体的话——
+> "至少能回答：过去 10 次运行中，平均延迟多少？工具失败率多少？"
+> 在 Phoenix UI 里回答这句话要进 project、切 Traces、加过滤器、选时间段、看图，
+> **能答但答得慢**，而且没法在 CI 里跑、没法在面试现场一条命令演示。
+> 脚本直接查 Phoenix GraphQL，不依赖 UI 版本，因此可脚本化、可回归。
+>
+> **为什么必须自动化断言**：L0/L1 用的是内存 telemetry，**验证不到"真的导出到
+> Phoenix"**。以前这条验收靠人眼看，改坏埋点时本地全绿、trace 断一段时间才发现。
 
 #### 对应 JD 职责与技能
 
@@ -251,13 +260,60 @@ JD 的核心是 **Guardrail Platform** —— 把 AI 安全检查变成可复用
 
 #### 验收标准
 
-* [ ] 任意一次 Agent 运行后，能在 observability 工具中看到完整 trace
+* [x] 任意一次 Agent 运行后，能在 observability 工具中看到完整 trace
+      —— 目标机 Phoenix 实测：`agent.request → input_guard → llm_call → tool_guard → tool_call → llm_call → output_guard`。已由 L2 冒烟自动断言。
 
-* [ ] trace 包含：输入、模型调用（latency/token）、工具调用（参数/返回值/耗时）、最终输出
+* [x] trace 包含：输入、模型调用（latency/token）、工具调用（参数/返回值/耗时）、最终输出
+      —— 工具调用原本**完全没有埋点**（只有 `tool_guard` 记录"要不要执行"），已补 `tool_call` span：`tool.name` / `tool.arguments` / `tool.status` / `tool.duration_ms`。
 
-* [ ] 至少能回答："过去 10 次运行中，平均延迟多少？工具失败率多少？"
+* [x] 至少能回答："过去 10 次运行中，平均延迟多少？工具失败率多少？"
+      —— `python scripts/phoenix_metrics.py --last 10`
 
-* [ ] 指标定义文档已撰写，口径清晰
+* [x] 指标定义文档已撰写，口径清晰
+      —— [`docs/metrics.md`](docs/metrics.md)：18 项指标的字段 / 定义 / 数据来源 / 聚合方式，含采集链路与**已知盲区**。
+
+---
+
+### 阶段 2 遗留（建议在阶段 3 之前补掉）
+
+这两条都是**阶段一就该做好的基础能力**，不是阶段二的新需求，放到阶段二末尾
+才暴露出来：
+
+1. **Presidio 拿英文 NER 跑中文**。`presidio_pii.py` 的 `_load_analyzer(language)`
+   收了 `language` 参数却从未使用，`AnalyzerEngine()` 恒定加载 `en_core_web_lg`，
+   `infra/spacy/manifest.json` 也只部署了英文模型。后果：中文正常输出被误判成
+   PERSON/LOCATION/NRP，OUTPUT guard 把约四成正常产品介绍判成 `redact`。
+   目标机 stderr 里 `presidio-analyzer Fetching all recognizers for language en`
+   就是活证据。
+
+   **连带问题**：L3 的 FT-01 因此被从 `action == "allow"` 放宽成 `in {allow, redact}`。
+   放宽之后，**即便将来 100% 的正常查询都被 redact，这条用例也会照样通过**——
+   它已经失去了检测该回归的能力。修检测器时必须把断言一并收回。
+
+2. **`short_circuit` 让"首个命中"压过"最严重命中"**。`GuardPipeline` 在
+   `short_circuit=True` 时，只要任一检测器产出结果就停后续层；而引擎的语义是
+   "按策略优先级取第一条命中规则"。叠加上一条：L1 干净 → presidio 误报 →
+   **L3 嵌入 / L4 judge 根本不执行** → 真实存在的提示注入被放成 `redact` 而非 `block`。
+   现有测试覆盖了意图语义（L1 命中停后层、失败不短路），但**没有覆盖这个危险交互**。
+
+#### 阶段 2 补做记录（2026-10-11，v0.1.12–v0.1.14）
+
+补齐阶段二产出物时，**先补的那批测试自己也有三个缺陷**，都在目标机上才暴露。
+留档是因为它们属于同一类错误——**绿色的检查不代表检查真的跑过**：
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| 验收 fixture 把 `_wait_for_trace` 的失败 `pytest.skip` 掉 | trace 查不到时 5 条用例全skip，**部署记成成功** | 失败必须红；skip 只留给"模型这次没调工具"这种条件场景 |
+| Phoenix 查询漏了 `timeRange` | 拿到的是几小时前的历史数据，报"一条都没有" | 一律带时间窗 + `trace { id }` 归属 |
+| 查询拼装出 `timeRange: )`（模板已有 `timeRange:` 键，变量里又带一遍） | GraphQL 语法错被轮询的 `except` 吞掉，报出来的错误信息**指向错误的真因** | 拼装逻辑抽成可测函数 + 离线结构断言；只对网络类异常重试 |
+
+第三条同时暴露了更一般的规矩：**轮询里的 `except` 不该把"查询写错了"和"数据还没到"
+混为一谈。** 前者重试 30 次也只是把真因藏起来，后者才值得重试。
+
+为此新增了 `tests/unit/test_l2_acceptance_query.py`（7 条）—— 不需要 Phoenix 就能
+拦下拼装错误。同一轮还发现 `scripts/phoenix_metrics.py` 的默认 `--limit 1500`
+超过 Phoenix 单页上限 1000，**每次运行必报错**，23 条单测因为都用 fake 而没抓到；
+改成游标分页并补了 5 条分页契约测试。
 
 ---
 
@@ -883,11 +939,11 @@ JD 的核心是 **Guardrail Platform** —— 把 AI 安全检查变成可复用
 
 开始阶段 1 前，确认以下事项：
 
-* [ ] MiniMax API Key 可用，已测试能正常调用
+* [x] MiniMax API Key 可用，已测试能正常调用
 
-* [ ] 本地 Python 3\.9\+ 环境就绪
+* [x] 本地 Python 3\.9\+ 环境就绪
 
-* [ ] Docker 已安装（用于部署 Langfuse/Phoenix）
+* [x] Docker 已安装（用于部署 Langfuse/Phoenix）
 
 * [ ] 已阅读本计划的全部 5 个阶段
 

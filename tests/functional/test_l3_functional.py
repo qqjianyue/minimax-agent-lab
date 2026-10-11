@@ -17,7 +17,7 @@
 | FT-08 安全工具调用 | ✅ B5 | C6 |
 | FT-09 检索间接注入 | ⏸ B8 | 需 RAG 组件 |
 | FT-10 检测器超时降级 | ✅ | — |
-| FT-11 成本可观测 | ✅ | D4 | Phoenix 部署完成（v20.20.0）；断言 trace 落库 + span_costs 非空 + cache_read 用量上报 |
+| FT-11 成本可观测 | ✅ | D4 | Phoenix v20.20.0；断言 trace 落库 + 成本非空 + cache_read 上报 |
 | FT-12 审计完整性 | ✅ | — |
 | FT-13 编排响应结构 | ✅ B6 | C7 orchestrator（steps/tools_called/interrupted） |
 | FT-14 编排输入拦截 | ✅ B6 | C7 orchestrator（block 后不进模型/工具） |

@@ -1,4 +1,4 @@
-﻿"""B6 C7 orchestrator 单元测试：LangGraph 图状态转移全分支。
+"""B6 C7 orchestrator 单元测试：LangGraph 图状态转移全分支。
 
 用 FakeLLM 驱动（预置响应表），覆盖：
 - 普通问答（无工具，1 轮）

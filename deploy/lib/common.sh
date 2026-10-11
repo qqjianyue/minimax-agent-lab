@@ -597,7 +597,11 @@ run_online_layer_with_retry() {
   for ((i = 0; i <= retries; i++)); do
     # AGENT_HOME 一起传进去：账本类断言需要知道"部署根在哪"，
     # 让测试自己硬编码目标机路径不如从部署流程拿同一份值。
+    # PHOENIX_ENDPOINT 同理 —— 阶段二的验收用例要直接查收集端，
+    # 两边各写一份默认值迟早会对不上，而对不上时测试会跳过而不是失败。
+    local phoenix_endpoint="http://127.0.0.1:${PHOENIX_PORT:-6006}"
     if AGENT_HOME="$AGENT_HOME" AGENT_BASE_URL="$BASE_URL" EXPECTED_VERSION="$version" \
+       PHOENIX_ENDPOINT="$phoenix_endpoint" \
        run_layer "$rel" "$layer"; then
       if (( i > 0 )); then
         warn "${layer} 第 $((i + 1)) 次尝试通过 —— 判定为模型输出偶发波动，本次不触发回退"

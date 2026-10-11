@@ -21,6 +21,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from agent_core.ports import LLMMessage, LLMRequest, LLMResponse
 from agent_tools.executor import ToolExecutor
@@ -63,6 +64,11 @@ class GuardRunner:
         self.redactor = redactor
         self._ledger = ledger
         self._instrumentation = instrumentation
+
+    @property
+    def instrumentation(self) -> Any:
+        """埋点门面；纯单测场景为 None。"""
+        return self._instrumentation
 
     def run(
         self,
@@ -225,9 +231,10 @@ def tool_loop_node(
             )
             continue
 
-        outcome = executor.execute(tc.name, tc.arguments, caller_scopes=BASE_CALLER_SCOPES)
-        status = outcome.status
-        output = outcome.output or ""
+        # 工具执行**必须**有独立 span：tool_guard 只说明"要不要执行"，
+        # 没有 tool_call 就无法区分"被策略拦下"与"执行了但失败"，
+        # 工具失败率也无从算起（阶段二验收标准 2 要求参数/返回值/耗时）。
+        status, output = _execute_tool(runner, executor, tc)
         if status == "requires_approval":
             interrupted = True
             output = "该操作需人工审批，未执行。"
@@ -254,6 +261,24 @@ def tool_loop_node(
     # 本轮已处理完，队列清空；是否需要再规划由条件边决定
     next_state["pending_tool_calls"] = []
     return next_state
+
+
+def _execute_tool(runner: GuardRunner, executor: ToolExecutor, tc: Any) -> tuple[str, str]:
+    """执行一次工具调用，返回 ``(status, output)``，全程包在 ``tool_call`` span 里。
+
+    无 instrumentation 时退化为直接执行 —— 埋点是可选的，控制流不能分叉。
+    """
+    inst = runner.instrumentation
+    if inst is None:
+        outcome = executor.execute(tc.name, tc.arguments, caller_scopes=BASE_CALLER_SCOPES)
+        return outcome.status, outcome.output or ""
+
+    started = time.perf_counter()
+    with inst.tool_call(tc.name, arguments=tc.arguments) as recorder:
+        outcome = executor.execute(tc.name, tc.arguments, caller_scopes=BASE_CALLER_SCOPES)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        recorder.record(status=outcome.status, latency_ms=latency_ms)
+    return outcome.status, outcome.output or ""
 
 
 def output_guard_node(state: OrchestratorState, runner: GuardRunner) -> OrchestratorState:

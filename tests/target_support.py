@@ -13,6 +13,8 @@
   由 ``deploy/lib/common.sh`` 在跑在线测试层时注入，测试**不自己硬编码**目标机
   路径 —— 两边写死两处，迟早会对不上，而对不上的后果是"测试断言了一个
   根本没人用的目录"。
+* ``PHOENIX_ENDPOINT`` —— 遥测收集端，默认 ``http://127.0.0.1:6006``。
+  阶段二的验收用例要直接查它，因此这里也要能从部署流程注入同一份值。
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from pathlib import Path
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_AGENT_HOME = "/data/workspace/minimax-agent"
+DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006"
 
 #: 审计账本相对部署根的位置。systemd 注入的 MINIMAX_AGENT_AUDIT__ROOT
 #: 指向 shared/，账本再挂在 audit/ 下 —— 必须与 AuditSettings.path 一致。
@@ -56,3 +59,8 @@ def shared_dir() -> Path:
 def current_release_dir() -> Path:
     """当前 release 的实际目录（软链接已解析）。"""
     return (agent_home() / "current").resolve()
+
+
+def phoenix_endpoint() -> str:
+    """遥测收集端地址。"""
+    return (os.environ.get("PHOENIX_ENDPOINT") or DEFAULT_PHOENIX_ENDPOINT).rstrip("/")

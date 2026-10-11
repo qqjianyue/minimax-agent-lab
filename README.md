@@ -19,10 +19,14 @@ minimax-agent-lab/
 │  ├─ guard_contract/    C2  契约层：DetectorResult / 枚举 / policy schema / 检测器端口
 │  ├─ policy_engine/     C3  策略求值：Decision / PolicyEngine / GuardPipeline / 动作执行 / 脱敏端口
 │  ├─ detector_rules/    C4  L1 规则检测器 + 脱敏器
+│  ├─ detector_ml/       C5  L2 PII(Presidio) + L3 嵌入相似度 + L4 LLM-as-Judge
+│  ├─ agent_tools/       C6  工具注册表 + Schema 校验 + 权限边界 + 高危确认
+│  ├─ orchestrator/      C7  LangGraph 状态图：plan→input_guard→retrieve→tool_loop→output_guard→respond
 │  ├─ audit_ledger/      C8  审计账本：JSONL append-only + 落盘前脱敏 + 保留期 + 检索
 │  ├─ telemetry/         C9  可观测性：span 埋点门面 + 属性脱敏 + OTel/NoOp 实现
 │  ├─ llm_minimax/       MiniMax 客户端（OpenAI 兼容，传输层可注入）
-│  └─ agent_service/     C10 FastAPI 服务：/healthz /chat /guard/inspect
+│  ├─ agent_service/     C10 FastAPI 服务：/healthz /chat /guard/inspect
+│  └─ eval_harness/      C11 评估回归：数据集加载器 + P/R/F1 报告 + 阈值扫描
 ├─ tests/
 │  ├─ fakes.py                 确定性替身（FakeLLM / StubDetector / FrozenClock ...）
 │  ├─ unit/                    L0 纯函数单元测试
@@ -31,7 +35,10 @@ minimax-agent-lab/
 │  └─ functional/              L3 功能（target：12 个业务场景）
 ├─ infra/                      基础设施（Docker Compose，独立版本，见 infra/README.md）
 ├─ deploy/                     部署脚本 + systemd unit 模板 + 配置模板
-├─ scripts/tasks.py            跨平台任务入口
+├─ docs/                       文档（metrics.md = 指标口径唯一权威）
+├─ scripts/
+│  ├─ tasks.py                 跨平台任务入口
+│  └─ phoenix_metrics.py       指标汇总视图：直查 Phoenix GraphQL，输出四组指标表
 └─ .github/workflows/ci.yml    CI
 ```
 
@@ -264,6 +271,18 @@ pipeline.run("drop table customers", stage=GuardStage.TOOL).action
 
 ## 可观测性：C8 审计账本 + C9 埋点
 
+> **指标口径的唯一权威在 [`docs/metrics.md`](docs/metrics.md)** —— 18 项指标的
+> 字段、定义、数据来源、聚合方式，以及**已知盲区**。它与
+> `scripts/phoenix_metrics.py` 必须永远一致（脚本是文档的可执行版本）。
+>
+> ```bash
+> # 一条命令回答："过去 10 次运行平均延迟多少？工具失败率多少？"
+> python scripts/phoenix_metrics.py --endpoint http://127.0.0.1:6006 --last 10
+> ```
+>
+> 端到端验收由 `tests/smoke/test_l2_trace_acceptance.py` 在**每次部署时自动断言**：
+> trace 六层齐全、成本非零、工具 span 在位。
+
 银行场景对这两样东西的要求完全不同，因此刻意做成两个独立组件：
 
 | | C8 `audit_ledger` | C9 `telemetry` |
@@ -305,8 +324,20 @@ agent.request              request.id
 │                          llm.cost.total / llm.cost.prompt / llm.cost.completion
 │                          llm.cost.prompt_details.cache_read
 │                          llm.token_price.input / cache_read / output
+├── tool_guard             guard.stage=tool —— 回答"要不要执行"
+├── tool_call              tool.name / tool.arguments / tool.status / tool.duration_ms
+│                          —— 回答"执行成没成"
 └── output_guard           guard.action / guard.matched
 ```
+
+**`tool_guard` 与 `tool_call` 必须是两个 span。** 只有前者时，看到一条工具相关
+记录**分不清是被策略拦下还是执行失败**，工具失败率也无从算起。补上 `tool_call`
+之后"trace 包含工具调用（参数/返回值/耗时）"这条验收标准才真正成立 ——
+此前 `executor.execute()` 完全没有被埋点。
+
+**检测点 span 内部包住检测本身。** 跑完检测再补开一个 span 记录结果，
+在结构上完全说得通、断言也过得去，但 span 里根本没有检测工作：时长恒等于零，
+出问题时看不出是检测慢还是别处慢。
 
 **成本口径（FT-11 落点）**：`llm.cost.total` 是业务侧按**人民币优惠单价**
 自算的精确口径（输入 4.2 / 输出 16.8 / 缓存命中 0.84 元·百万 token，2026-10

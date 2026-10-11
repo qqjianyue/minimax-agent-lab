@@ -47,6 +47,12 @@ PROMPT_ATTRIBUTES = frozenset(
         "system_prompt",
         "user_message",
         "retrieved_documents",
+        # 工具的入参与出参同样是**原文**，口径必须与 prompt 一致。
+        # 工具入参多半由模型从用户输入里抄，出参可能直接是客户资料 ——
+        # 按 B4 确立的口径（"trace 是可被调阅的观测库，默认不落原文"），
+        # 这两个键默认只留键名不落内容，开 capture_prompts 才放原文。
+        "tool.arguments",
+        "tool.output",
     }
 )
 

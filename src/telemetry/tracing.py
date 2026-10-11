@@ -27,7 +27,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -200,6 +201,31 @@ class _LlmCallRecorder:
             self._span.set_attribute("llm.model_name", model)
 
 
+class _ToolCallRecorder:
+    """``tool_call`` span 的出口记录器。
+
+    入参在 span **开始时**就写（调用前已知），出参与状态在**结束后**写
+    ——所以 record 分两次调用，这是工具调用与模型调用最不一样的地方。
+    """
+
+    __slots__ = ("_span",)
+
+    def __init__(self, span: SpanPort) -> None:
+        self._span = span
+
+    def record(self, *, status: str, latency_ms: float) -> None:
+        """写入执行结果。
+
+        Args:
+            status: executor 的结构化状态（ok / not_found / invalid_arguments /
+                permission_denied / requires_approval / handler_error）。
+                **工具失败率就是按这个字段算的**，所以哪怕执行失败也必须写 ——
+                没有 status 的 span 会让失败率被系统性低估。
+        """
+        self._span.set_attribute("tool.status", status)
+        self._span.set_attribute("tool.duration_ms", round(latency_ms, 3))
+
+
 class Instrumentation:
     """业务级埋点门面。
 
@@ -265,6 +291,32 @@ class Instrumentation:
         attrs = {"request.id": request_id, **attributes}
         with self._telemetry.start_span("agent.request", **attrs):
             yield
+
+    @contextmanager
+    def tool_call(
+        self, name: str, *, arguments: Mapping[str, Any] | None = None, **attributes: Any
+    ) -> Iterator[_ToolCallRecorder]:
+        """开启一个**工具执行** span。
+
+        与 :meth:`tool_guard` 的区别要说清楚，否则很容易混：
+        ``tool_guard`` 记的是"要不要执行"（策略判定），``tool_call`` 记的是
+        "执行成没成"（参数 / 返回 / 耗时）。两者缺一，工具链路的排障就不完整：
+        只有 guard 时，看到一条 tool_guard 记录无法区分"被拦了"和"执行了但失败"。
+
+        Args:
+            name: 工具名。
+            arguments: 结构化入参。会整体 JSON 序列化后写入
+                ``tool.arguments``，**受 capture_prompts 开关管辖**
+                （默认只留键名，见 :mod:`telemetry.redaction`）。
+        """
+        payload = (
+            json.dumps(dict(arguments), ensure_ascii=False, sort_keys=True)
+            if arguments is not None
+            else ""
+        )
+        attrs = {"tool.name": name, "tool.arguments": payload, **attributes}
+        with self._telemetry.start_span("tool_call", **attrs) as span:
+            yield _ToolCallRecorder(span)
 
     def shutdown(self) -> None:
         """关闭底层遥测实现，冲刷未导出的 span。幂等。

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from detector_rules.redactor import RegexRedactor
@@ -451,6 +453,93 @@ class TestCostEstimation:
         )
         # 截断后 cached=100：100*0.5 = 50
         assert cost == pytest.approx(50 / 1_000_000)
+
+
+class TestToolCallSpan:
+    """阶段二验收标准 2：工具调用要有参数 / 返回 / 耗时。
+
+    在补这个 span 之前，`executor.execute()` 完全没被埋点 —— 只有
+    `tool_guard` 记录"要不要执行"。后果是看到一条工具相关记录时，
+    **分不清是被策略拦下还是执行失败**，工具失败率也无从算起。
+    """
+
+    def test_records_name_arguments_status_and_duration(self) -> None:
+        telemetry = InMemoryTelemetry()
+        inst = Instrumentation(telemetry)
+
+        with inst.tool_call("get_product_rate", arguments={"product_type": "deposit"}) as rec:
+            rec.record(status="ok", latency_ms=7.25)
+
+        [span] = telemetry.find("tool_call")
+        assert span.attributes["tool.name"] == "get_product_rate"
+        assert json.loads(span.attributes["tool.arguments"]) == {"product_type": "deposit"}
+        assert span.attributes["tool.status"] == "ok"
+        assert span.attributes["tool.duration_ms"] == 7.25
+
+    def test_failure_status_is_still_recorded(self) -> None:
+        """失败也必须写 status —— 否则失败率被系统性低估。"""
+        telemetry = InMemoryTelemetry()
+        inst = Instrumentation(telemetry)
+
+        with inst.tool_call("ghost", arguments={}) as rec:
+            rec.record(status="not_found", latency_ms=0.4)
+
+        [span] = telemetry.find("tool_call")
+        assert span.attributes["tool.status"] == "not_found"
+
+    def test_arguments_are_optional(self) -> None:
+        telemetry = InMemoryTelemetry()
+        inst = Instrumentation(telemetry)
+
+        with inst.tool_call("ping"):
+            pass
+
+        [span] = telemetry.find("tool_call")
+        assert span.attributes["tool.arguments"] == ""
+
+    def test_arguments_are_not_mutated(self) -> None:
+        telemetry = InMemoryTelemetry()
+        inst = Instrumentation(telemetry)
+        original = {"product_type": "deposit"}
+
+        with inst.tool_call("get_product_rate", arguments=original):
+            pass
+
+        assert original == {"product_type": "deposit"}
+
+    def test_sits_as_sibling_of_tool_guard(self) -> None:
+        """tool_guard 与 tool_call 是两个 span，父节点都是 agent.request。"""
+        telemetry = InMemoryTelemetry()
+        inst = Instrumentation(telemetry)
+
+        with telemetry.start_span("agent.request"):
+            with inst.guard("tool_guard", GuardStage.TOOL):
+                pass
+            with inst.tool_call("get_product_rate", arguments={"product_type": "loan"}) as rec:
+                rec.record(status="ok", latency_ms=1.0)
+
+        names = telemetry.tree()
+        assert ("tool_guard", 1) in names
+        assert ("tool_call", 1) in names
+
+
+class TestToolCallRedaction:
+    """工具入参/出参是原文，口径必须与 prompt 一致。"""
+
+    def test_arguments_are_masked_when_capture_disabled(self) -> None:
+        safe = sanitize_attributes(
+            {"tool.arguments": '{"customer_id": "6222021234567890"}'},
+            capture_prompts=False,
+            redactor=RegexRedactor(),
+        )
+        assert safe["tool.arguments"] == REDACTED_PLACEHOLDER
+
+    def test_arguments_are_kept_when_capture_enabled(self) -> None:
+        payload = '{"customer_id": "6222021234567890"}'
+        safe = sanitize_attributes(
+            {"tool.arguments": payload}, capture_prompts=True, redactor=RegexRedactor()
+        )
+        assert safe["tool.arguments"] == payload
 
 
 class TestSpanTree:
