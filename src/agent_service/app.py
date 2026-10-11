@@ -411,6 +411,9 @@ def handle_chat(container: AppContainer, payload: ChatRequest) -> ChatResponse:
                 "interrupted": False,
                 "blocked": False,
                 "redacted": False,
+                # total_usage 必须有初值：任何路径（含输入被 block 不调模型）
+                # 返回时 usage 都不会缺失（FT-13 曾因缺失返回空 usage）
+                "total_usage": TokenUsage(),
             }
         )
 

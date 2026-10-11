@@ -159,16 +159,19 @@ def llm_plan_node(
     next_state["steps"] = state.get("steps", 0) + 1
     # 待执行工具队列（LLMMessage 不承载 tool_calls，走状态队列）
     next_state["pending_tool_calls"] = list(getattr(completion, "tool_calls", ()))
-    # token 用量累计（多轮编排的成本口径 = 各轮之和）
+    # token 用量累计（多轮编排的成本口径 = 各轮之和）。
+    # usage 缺失（极少数响应不带 usage）时按 0 累计而不是丢弃：
+    # 否则首轮缺失会导致 total_usage 恒缺失，FT-13 偶发失败（usage 空）。
     prev = state.get("total_usage")
-    usage = getattr(completion, "usage", None)
-    if usage is not None:
-        from agent_core.ports import TokenUsage  # noqa: PLC0415
+    from agent_core.ports import TokenUsage  # noqa: PLC0415
 
-        next_state["total_usage"] = TokenUsage(
-            prompt_tokens=(prev.prompt_tokens if prev else 0) + usage.prompt_tokens,
-            completion_tokens=(prev.completion_tokens if prev else 0) + usage.completion_tokens,
-        )
+    usage = getattr(completion, "usage", None)
+    u = usage if usage is not None else TokenUsage()
+    next_state["total_usage"] = TokenUsage(
+        prompt_tokens=(prev.prompt_tokens if prev else 0) + u.prompt_tokens,
+        completion_tokens=(prev.completion_tokens if prev else 0) + u.completion_tokens,
+        cached_prompt_tokens=(prev.cached_prompt_tokens if prev else 0) + u.cached_prompt_tokens,
+    )
     return next_state
 
 
