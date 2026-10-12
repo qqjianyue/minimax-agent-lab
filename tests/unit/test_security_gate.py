@@ -66,40 +66,63 @@ class TestRequestTracking:
         security_gate.begin_test("tests/functional/x.py::test_z")
         assert security_gate._current_requests == []
 
-    def test_response_hook_registers_request_id(self) -> None:
-        """登记必须挂在客户端响应钩子上，不能靠各测试文件自觉调用。
+    def test_response_hook_reads_unread_body(self) -> None:
+        """钩子触发时 body **还没被读取** —— 必须先 read()。
 
-        踩过的坑：L3 的 functional 助手加了登记，L2 冒烟三个文件全是直接
-        ``http.post("/chat")``，降级时 ``request_ids`` 是空的 —— 报告里只剩
-        一句失败原因，看上去"有记录"，实际查不到任何账本证据。
+        httpx 在 ``Client._send_handling_redirects`` 里先派发响应钩子，
+        ``Client.send()`` 才调 ``response.read()``。不先读就 ``.json()``
+        会抛 ``ResponseNotRead``。
+
+        这条测试的存在理由：早先那版单测用的是**假响应对象**（``.json()``
+        直接能调），压根没复现这个约束，于是本地绿、线上空 —— 钩子装上了、
+        跑了、什么也没做，降级报告里 ``request_ids`` 永远是空的且不报错。
+        **测试替身掩盖了真实约束**，这是比 bug 本身更值得记的一条。
+        所以这一组用例全部改用真的 ``httpx.Response``，不再有假对象。
         """
+        import httpx
 
-        class Resp:
-            @staticmethod
-            def json() -> dict:
-                return {"request_id": "req-from-hook", "action": "block"}
+        def body():
+            yield b'{"request_id": "req-real", "action": "allow"}'
 
-        security_gate.record_response_request_id(Resp())
-        assert security_gate._current_requests == ["req-from-hook"]
+        request = httpx.Request("POST", "http://testserver/chat")
+        # 流式响应：_content 尚未设置，与真实钩子触发时机一致
+        response = httpx.Response(200, content=body(), request=request)
+        assert not hasattr(response, "_content"), "这个前提不成立，测试就白测了"
+
+        security_gate.record_response_request_id(response)
+        assert security_gate._current_requests == ["req-real"]
+
+    def test_response_hook_is_idempotent_with_read_body(self) -> None:
+        """已经读过一遍的响应（``Client.send()`` 随后的那次 read）不能出问题。"""
+        import httpx
+
+        response = httpx.Response(
+            200, json={"request_id": "req-read"}, request=httpx.Request("GET", "http://x/")
+        )
+        response.read()
+        security_gate.record_response_request_id(response)
+        assert security_gate._current_requests == ["req-read"]
 
     def test_response_hook_ignores_bodies_without_request_id(self) -> None:
-        class Resp:
-            @staticmethod
-            def json() -> dict:
-                return {"detail": "hello"}
+        import httpx
 
-        security_gate.record_response_request_id(Resp())
+        response = httpx.Response(
+            200, json={"detail": "hello"}, request=httpx.Request("GET", "http://x/")
+        )
+        security_gate.record_response_request_id(response)
         assert security_gate._current_requests == []
 
     def test_response_hook_survives_non_json_body(self) -> None:
         """响应体不是 JSON 时静默跳过 —— 那与本钩子无关，不能因此炸掉测试。"""
+        import httpx
 
-        class Resp:
-            @staticmethod
-            def json() -> dict:
-                raise ValueError("not json")
+        def body():
+            yield b"<html>not json</html>"
 
-        security_gate.record_response_request_id(Resp())
+        response = httpx.Response(
+            200, content=body(), request=httpx.Request("GET", "http://x/")
+        )
+        security_gate.record_response_request_id(response)
         assert security_gate._current_requests == []
 
 

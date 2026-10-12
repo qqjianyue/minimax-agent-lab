@@ -157,12 +157,21 @@ def record_response_request_id(response: Any) -> None:
     结果降级时 ``request_ids`` 是空的，报告里只剩一句失败原因，看上去
     "有记录"，实际查不到任何账本证据。
 
-    **半截证据比没有证据更危险，因为它看起来是完整的。** 所以登记必须挂在
-    客户端上而不是靠各文件自觉。
+    **半截证据比没有证据更危险，因为它看起来是完整的。**
+
+    必须在解析前先 :meth:`read`：httpx 在
+    ``Client._send_handling_redirects`` 里**先派发响应钩子、之后**才由
+    ``Client.send()`` 调 ``response.read()``。不先读就 ``.json()`` 会抛
+    ``ResponseNotRead``。这个坑比"漏登记"更隐蔽 —— 早先用
+    ``except Exception: return`` 兜住，钩子"装上了、跑了、什么也没做"，
+    线上降级报告的 ``request_ids`` 永远是空的，且没有任何报错。
     """
     try:
+        # read() 是幂等的：_content 已有就直接返回，Client.send() 随后的
+        # 那次调用不受影响。
+        response.read()
         payload = response.json()
-    except Exception:  # noqa: BLE001 - 响应体不是 JSON 就与本钩子无关
+    except Exception:  # noqa: BLE001 - 响应体不可读与本钩子无关，不能炸掉测试
         return
     if isinstance(payload, dict):
         note_request(payload.get("request_id"))
