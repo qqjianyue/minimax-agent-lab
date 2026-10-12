@@ -133,6 +133,14 @@ def http() -> httpx.Client:
 
     只在 ``--allow-network`` 的运行中才有意义；本地离线运行时不会被触发，
     因为 L2/L3 已被 ``-m "not target"`` 排除。
+
+    响应钩子自动登记 ``request_id`` —— 降级闸门靠它回查账本。挂在客户端上
+    而非让各测试文件自觉调用：实测踩过 L2 冒烟三个文件全部漏登记，导致
+    降级时证据为空（见 :func:`tests.security_gate.record_response_request_id`）。
     """
-    with httpx.Client(base_url=base_url(), timeout=60.0) as client:
+    with httpx.Client(
+        base_url=base_url(),
+        timeout=60.0,
+        event_hooks={"response": [security_gate.record_response_request_id]},
+    ) as client:
         yield client

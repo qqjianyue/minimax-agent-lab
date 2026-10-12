@@ -148,6 +148,26 @@ def note_request(request_id: str | None) -> None:
         _current_requests.append(request_id)
 
 
+def record_response_request_id(response: Any) -> None:
+    """httpx 响应钩子：从响应体里抠出 ``request_id`` 自动登记。
+
+    为什么要有这个，而不是让每个测试文件自己记得调 :func:`note_request`：
+    靠自觉登记，漏一个文件就静默丢一段证据。实测踩过 —— L3 的 functional
+    文件里助手加了登记，L2 冒烟的三个文件全是直接 ``http.post("/chat")``，
+    结果降级时 ``request_ids`` 是空的，报告里只剩一句失败原因，看上去
+    "有记录"，实际查不到任何账本证据。
+
+    **半截证据比没有证据更危险，因为它看起来是完整的。** 所以登记必须挂在
+    客户端上而不是靠各文件自觉。
+    """
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - 响应体不是 JSON 就与本钩子无关
+        return
+    if isinstance(payload, dict):
+        note_request(payload.get("request_id"))
+
+
 def ledger_path() -> Path | None:
     """定位审计账本。
 
@@ -388,6 +408,7 @@ __all__ = [
     "ledger_path",
     "note_request",
     "record_failure",
+    "record_response_request_id",
     "report_path",
     "skip_reason",
     "summarize",

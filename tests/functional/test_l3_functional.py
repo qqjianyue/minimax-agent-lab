@@ -46,7 +46,6 @@ import time
 
 import httpx
 import pytest
-from tests import security_gate
 
 VALID_CN_ID = "11010519491231002X"
 VALID_CARD = "4539578763621486"
@@ -55,18 +54,15 @@ VALID_CARD = "4539578763621486"
 def inspect(http: httpx.Client, text: str, stage: str = "input") -> dict:
     response = http.post("/guard/inspect", json={"text": text, "stage": stage})
     assert response.status_code == 200, response.text
-    body = response.json()
-    # 交给降级闸门：万一这条被记为 skip，靠 request_id 回查账本拿到证据
-    security_gate.note_request(body.get("request_id"))
-    return body
+    # request_id 由 conftest 的 ``http`` fixture 响应钩子自动登记
+    # （见 security_gate.record_response_request_id），这里不再手工登记。
+    return response.json()
 
 
 def chat(http: httpx.Client, message: str) -> dict:
     response = http.post("/chat", json={"message": message})
     assert response.status_code == 200, response.text
-    body = response.json()
-    security_gate.note_request(body.get("request_id"))
-    return body
+    return response.json()
 
 
 # --- FT-01 正常查询 ---------------------------------------------------------

@@ -66,6 +66,42 @@ class TestRequestTracking:
         security_gate.begin_test("tests/functional/x.py::test_z")
         assert security_gate._current_requests == []
 
+    def test_response_hook_registers_request_id(self) -> None:
+        """登记必须挂在客户端响应钩子上，不能靠各测试文件自觉调用。
+
+        踩过的坑：L3 的 functional 助手加了登记，L2 冒烟三个文件全是直接
+        ``http.post("/chat")``，降级时 ``request_ids`` 是空的 —— 报告里只剩
+        一句失败原因，看上去"有记录"，实际查不到任何账本证据。
+        """
+
+        class Resp:
+            @staticmethod
+            def json() -> dict:
+                return {"request_id": "req-from-hook", "action": "block"}
+
+        security_gate.record_response_request_id(Resp())
+        assert security_gate._current_requests == ["req-from-hook"]
+
+    def test_response_hook_ignores_bodies_without_request_id(self) -> None:
+        class Resp:
+            @staticmethod
+            def json() -> dict:
+                return {"detail": "hello"}
+
+        security_gate.record_response_request_id(Resp())
+        assert security_gate._current_requests == []
+
+    def test_response_hook_survives_non_json_body(self) -> None:
+        """响应体不是 JSON 时静默跳过 —— 那与本钩子无关，不能因此炸掉测试。"""
+
+        class Resp:
+            @staticmethod
+            def json() -> dict:
+                raise ValueError("not json")
+
+        security_gate.record_response_request_id(Resp())
+        assert security_gate._current_requests == []
+
 
 class TestLedgerEvidence:
     def test_evidence_is_collected_by_request_id(self, tmp_path: Path) -> None:
