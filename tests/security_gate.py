@@ -169,13 +169,33 @@ def _ids_in(line: str) -> set[str]:
 
 
 def _short_failure(report: Any) -> str:
-    """把 pytest 的长 repr 压成一行可读摘要。"""
+    """把 pytest 的长 repr 压成一行可读摘要。
+
+    取值优先级是有讲究的：pytest 的断言失败 repr 里，信息量最大的不是最后
+    那些 diff 碎片，而是**带自定义 message 的那行** ``AssertionError: ...``。
+    早先的实现从后往前找，结果抓到 ``+ block`` 这种 diff 残片 —— 报告里
+    出现一行没头没尾的 ``+ block``，等于什么都没说。
+
+    所以优先级：自定义 message > ``assert`` 语句行 > 首行 E > 末行。
+    """
     text = str(getattr(report, "longrepr", "") or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in reversed(lines):
-        if line.startswith("E ") or "assert" in line:
-            return line.lstrip("E ").strip()[:400]
-    return lines[-1][:400] if lines else "(无失败详情)"
+    if not lines:
+        return "(无失败详情)"
+
+    def clean(line: str) -> str:
+        return line.lstrip("E").lstrip(":").strip()[:400]
+
+    for line in lines:
+        if "AssertionError:" in line:
+            return clean(line)
+    for line in lines:
+        if "assert " in line:
+            return clean(line)
+    e_lines = [line for line in lines if line.startswith("E")]
+    if e_lines:
+        return clean(e_lines[0])
+    return lines[-1][:400]
 
 
 def record_failure(item: Any, report: Any) -> dict[str, Any]:

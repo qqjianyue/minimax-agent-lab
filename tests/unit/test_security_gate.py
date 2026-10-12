@@ -215,3 +215,53 @@ class TestFailureDowngrade:
         assert summary is not None
         assert "不算通过" in summary
         assert "上线前重大问题.md" in summary
+
+
+class TestFailureSummaryQuality:
+    """失败摘要必须是**能读懂的句子**，不是 pytest 的 diff 残片。
+
+    v0.1.22 首次部署时报告里出现过 ``"reason": "+ block"`` —— 那是断言 diff
+    的最后一行。一行没头没尾的 ``+ block`` 等于什么都没说，而这份报告的唯一
+    用途就是让人事后读懂"当时到底怎么了"。
+    """
+
+    def _fake_report(self, text: str):
+        class R:
+            longrepr = text
+
+        return R()
+
+    def test_prefers_the_custom_assertion_message(self) -> None:
+        repr_text = (
+            "E       AssertionError: 正常业务查询被判 block。中文误报回归的话，"
+            "多半是 Presidio 的双语装配或形态过滤被改坏了。\n"
+            "E       assert 'block' == 'allow'\n"
+            "E        +  where block = body['action']\n"
+        )
+        entry = security_gate.record_failure(
+            type("I", (), {"nodeid": "n"})(), self._fake_report(repr_text)
+        )
+        assert entry["reason"].startswith("AssertionError:")
+        assert "正常业务查询被判 block" in entry["reason"]
+        assert "+  where" not in entry["reason"]
+
+    def test_falls_back_to_the_assert_line(self) -> None:
+        repr_text = "E       assert 'block' == 'allow'\nE        +  where block = body['action']\n"
+        entry = security_gate.record_failure(
+            type("I", (), {"nodeid": "n"})(), self._fake_report(repr_text)
+        )
+        assert entry["reason"] == "assert 'block' == 'allow'"
+
+    def test_empty_report_is_explicit(self) -> None:
+        entry = security_gate.record_failure(
+            type("I", (), {"nodeid": "n"})(), self._fake_report("")
+        )
+        assert entry["reason"] == "(无失败详情)"
+
+    def test_reason_is_truncated_to_a_single_line(self) -> None:
+        long_msg = "E       AssertionError: " + "很长的说明" * 200
+        entry = security_gate.record_failure(
+            type("I", (), {"nodeid": "n"})(), self._fake_report(long_msg)
+        )
+        assert "\n" not in entry["reason"]
+        assert len(entry["reason"]) <= 400
