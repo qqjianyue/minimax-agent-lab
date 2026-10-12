@@ -100,7 +100,11 @@ def ledger_path() -> Path | None:
     candidates: list[Path] = []
     override = os.environ.get(LEDGER_ENV)
     if override:
-        candidates.append(Path(override))
+        # 显式指定是**排他的**：指定了就只看它。静默回退到另一个账本，
+        # 会让报告里的证据来自一个没人预期的文件 —— 那比找不到账本更糟，
+        # 因为它看起来是完整的。
+        path = Path(override)
+        return path if path.is_file() else None
     root = os.environ.get("MINIMAX_AGENT_AUDIT__ROOT")
     if root:
         candidates.append(Path(root) / "audit" / "ledger.jsonl")

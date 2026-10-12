@@ -111,6 +111,27 @@ class TestLedgerEvidence:
         assert got["note"] == "未找到审计账本，证据不完整"
         assert got["records"] == []
 
+    def test_explicit_ledger_path_never_falls_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """显式指定的账本路径是**排他的**。
+
+        这条在目标机上才暴露：目标机的 ``$HOME/.minimax-agent-home/shared/
+        audit/ledger.jsonl`` 真的存在，所以指向不存在文件的 override 若继续
+        向下探测，就会**静默换成另一个账本** —— 报告里的证据来自一个没人
+        预期的文件，而它看起来是完整的。
+        """
+        real = tmp_path / "真账本.jsonl"
+        _write_ledger(
+            real, [{"request_id": "req-a", "stage": "output", "action": "block"}]
+        )
+        monkeypatch.setenv(security_gate.LEDGER_ENV, str(tmp_path / "不存在.jsonl"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert security_gate.ledger_path() is None
+
+        monkeypatch.setenv(security_gate.LEDGER_ENV, str(real))
+        assert security_gate.ledger_path() == real
+
     def test_corrupt_ledger_line_does_not_abort_the_scan(self, tmp_path: Path) -> None:
         ledger = tmp_path / "ledger.jsonl"
         ledger.write_text(
