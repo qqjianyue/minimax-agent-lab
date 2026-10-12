@@ -64,42 +64,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "target"
         ) is None:
             item.add_marker(pytest.mark.target)
+        cls_name = item.cls.__name__ if item.cls is not None else None
         if (
             type(item).__name__ == "Function"
-            and item.cls is not None
-            and item.cls.__name__ in SECURITY_DETECTION_CLASSES
+            and security_gate.in_security_scope(cls_name, item.name)
             and item.get_closest_marker("security_detection") is None
         ):
             item.add_marker(pytest.mark.security_detection)
-
-
-#: 允许「安全检测失败 → 记录证据后降级为 skip」的用例类。
-#:
-#: 判定口径是**这条用例检验的对象是不是检测判定本身**（block / redact /
-#: escalate / 隔离 / 降级）。集中声明在这里而不是逐个加装饰器，是为了能一眼
-#: 看出谁被降级、谁没有。
-#:
-#: 刻意**不含**的三类：
-#:
-#: - ``TestFT11CostObservability``  —— 成本与 trace 落库，与检测无关；
-#: - ``TestFT12AuditIntegrity``      —— 审计完整性。用户明确要求保留：它不检验
-#:   会不会 block，只检验"该记的都记下了"，降级它等于把审计本身变成可选项；
-#: - ``TestFT13OrchestratedChat``    —— 编排响应结构，失败即真问题。
-SECURITY_DETECTION_CLASSES = frozenset(
-    {
-        "TestFT01NormalQuery",
-        "TestFT02DirectInjection",
-        "TestFT03EncodingBypass",
-        "TestFT04InputPII",
-        "TestFT05OutputPII",
-        "TestFT06SystemPromptLeak",
-        "TestFT07DangerousToolCall",
-        "TestFT08SafeToolCall",
-        "TestFT09IndirectInjectionInRetrieval",
-        "TestFT10FailMode",
-        "TestFT14OrchestratedInputBlock",
-    }
-)
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,64 @@ LEDGER_ENV = "AGENT_SECURITY_GATE_LEDGER"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+#: 允许「安全检测失败 → 记录证据后降级为 skip」的用例**类**。
+#:
+#: 判定口径是**这条用例检验的对象是不是检测判定本身**（block / redact /
+#: escalate / 隔离 / 降级）。集中声明在这里而不是逐个加装饰器，是为了能一眼
+#: 看出谁被降级、谁没有。
+#:
+#: 刻意**不含**的三类：
+#:
+#: - ``TestFT11CostObservability``  —— 成本与 trace 落库，与检测无关；
+#: - ``TestFT12AuditIntegrity``      —— 审计完整性。用户明确要求保留：它不检验
+#:   会不会 block，只检验"该记的都记下了"，降级它等于把审计本身变成可选项；
+#: - ``TestFT13OrchestratedChat``    —— 编排响应结构，失败即真问题。
+SECURITY_DETECTION_CLASSES = frozenset(
+    {
+        "TestFT01NormalQuery",
+        "TestFT02DirectInjection",
+        "TestFT03EncodingBypass",
+        "TestFT04InputPII",
+        "TestFT05OutputPII",
+        "TestFT06SystemPromptLeak",
+        "TestFT07DangerousToolCall",
+        "TestFT08SafeToolCall",
+        "TestFT09IndirectInjectionInRetrieval",
+        "TestFT10FailMode",
+        "TestFT14OrchestratedInputBlock",
+    }
+)
+
+#: 允许降级的**具体用例**（``类名::方法名``）。
+#:
+#: 存在这个列表是因为类级粒度在某些类上太粗。典型：``TestThinEndToEnd``
+#: 里两条用例同属一次真实 ``/chat``，但性质相反 ——
+#:
+#: - ``test_chat_reaches_the_model`` 断言正常提问 ``allow``，
+#:   **正暴露在 P0-1 之下**（模型英文拒答被 L1 当成泄露 → block）；
+#: - ``test_chat_does_not_consume_model_when_blocked`` 断言注入被拦在模型之前，
+#:   这条是确定性的（输入侧 L1 必中），**挂了就是真回归，绝不能降级**。
+#:
+#: 整类放行会把后者一起埋掉，所以这里必须能精确到方法。
+SECURITY_DETECTION_TESTS = frozenset(
+    {
+        "TestThinEndToEnd::test_chat_reaches_the_model",
+    }
+)
+
+
+def in_security_scope(cls_name: str | None, method_name: str | None) -> bool:
+    """这条用例是否在「可降级」范围内。
+
+    写成纯函数是为了能单测：降级范围一旦写错，后果是"该拦的没拦"被悄悄放过，
+    而那种错误不会让任何测试变红。
+    """
+    if cls_name is None:
+        return False
+    if cls_name in SECURITY_DETECTION_CLASSES:
+        return True
+    return method_name is not None and f"{cls_name}::{method_name}" in SECURITY_DETECTION_TESTS
+
 #: 本次会话内被降级为 skip 的条目
 _entries: list[dict[str, Any]] = []
 
@@ -318,11 +376,14 @@ def _now() -> str:
 
 __all__ = [
     "LEDGER_ENV",
+    "SECURITY_DETECTION_CLASSES",
+    "SECURITY_DETECTION_TESTS",
     "SKIP_ENV",
     "begin_test",
     "collect_ledger_evidence",
     "end_test",
     "flush",
+    "in_security_scope",
     "is_enabled",
     "ledger_path",
     "note_request",

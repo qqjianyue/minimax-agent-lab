@@ -217,6 +217,80 @@ class TestFailureDowngrade:
         assert "上线前重大问题.md" in summary
 
 
+class TestDowngradeScope:
+    """降级范围钉死。
+
+    范围写错的后果是**"该拦的没拦"被悄悄放过**，而那种错误不会让任何测试变红
+    —— 因为它恰恰是靠"测试没红"来生效的。所以这里逐条钉。
+    """
+
+    @pytest.mark.parametrize(
+        "cls_name",
+        [
+            "TestFT01NormalQuery",
+            "TestFT02DirectInjection",
+            "TestFT06SystemPromptLeak",
+            "TestFT10FailMode",
+            "TestFT14OrchestratedInputBlock",
+        ],
+    )
+    def test_security_classes_are_downgradable(self, cls_name: str) -> None:
+        assert security_gate.in_security_scope(cls_name, "test_anything") is True
+
+    @pytest.mark.parametrize(
+        ("cls_name", "method"),
+        [
+            ("TestFT11CostObservability", "test_cost_is_not_zero"),
+            ("TestFT12AuditIntegrity", "test_audit_has_full_provenance"),
+            ("TestFT13OrchestratedChat", "test_max_steps_field_present"),
+            ("TestThinEndToEnd", "test_chat_does_not_consume_model_when_blocked"),
+            ("TestCredentialHygiene", "test_no_endpoint_leaks_the_api_key"),
+            ("TestLedgerWrites", "test_chat_appends_input_and_output_records"),
+            (None, "test_something"),
+        ],
+        ids=[
+            "cost-observability",
+            "audit-integrity",
+            "orchestration-shape",
+            "injection-still-blocked",
+            "credential-hygiene",
+            "ledger-writes",
+            "no-class",
+        ],
+    )
+    def test_non_security_tests_are_not_downgradable(
+        self, cls_name: str | None, method: str
+    ) -> None:
+        """这些失败一律照常阻断部署。
+
+        尤其 ``TestThinEndToEnd::test_chat_does_not_consume_model_when_blocked``：
+        它与被降级的那条同属一次真实 ``/chat``，但它断言的是**注入必须在模型之前
+        被拦** —— 确定性测试，挂了就是真回归。
+        """
+        assert security_gate.in_security_scope(cls_name, method) is False
+
+    def test_p01_exposed_smoke_test_is_method_scoped(self) -> None:
+        """P0-1 在 L2 冒烟里的暴露点：正常提问断言 allow。
+
+        同类的另一条断言 block，必须保持不可降级 —— 这正是需要方法级粒度的原因。
+        """
+        assert (
+            security_gate.in_security_scope(
+                "TestThinEndToEnd", "test_chat_reaches_the_model"
+            )
+            is True
+        )
+        assert (
+            security_gate.in_security_scope(
+                "TestThinEndToEnd", "test_chat_does_not_consume_model_when_blocked"
+            )
+            is False
+        )
+
+    def test_scope_ignores_missing_method(self) -> None:
+        assert security_gate.in_security_scope("TestThinEndToEnd", None) is False
+
+
 class TestFailureSummaryQuality:
     """失败摘要必须是**能读懂的句子**，不是 pytest 的 diff 残片。
 
