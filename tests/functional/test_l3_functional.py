@@ -46,6 +46,7 @@ import time
 
 import httpx
 import pytest
+from tests import security_gate
 
 VALID_CN_ID = "11010519491231002X"
 VALID_CARD = "4539578763621486"
@@ -54,13 +55,18 @@ VALID_CARD = "4539578763621486"
 def inspect(http: httpx.Client, text: str, stage: str = "input") -> dict:
     response = http.post("/guard/inspect", json={"text": text, "stage": stage})
     assert response.status_code == 200, response.text
-    return response.json()
+    body = response.json()
+    # 交给降级闸门：万一这条被记为 skip，靠 request_id 回查账本拿到证据
+    security_gate.note_request(body.get("request_id"))
+    return body
 
 
 def chat(http: httpx.Client, message: str) -> dict:
     response = http.post("/chat", json={"message": message})
     assert response.status_code == 200, response.text
-    return response.json()
+    body = response.json()
+    security_gate.note_request(body.get("request_id"))
+    return body
 
 
 # --- FT-01 正常查询 ---------------------------------------------------------

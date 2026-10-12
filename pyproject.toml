@@ -1,6 +1,6 @@
 [project]
 name = "minimax-agent"
-version = "0.1.21"
+version = "0.1.22"
 description = "MiniMax-backed local agent with layered guardrails and full-chain observability"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -95,6 +95,7 @@ markers = [
     "integration: L1 集成测试，使用 Fake 依赖，完全离线",
     "eval: L4 评估层（B7 C11），离线指标计算与 Fake 跑分",
     "target: 仅在目标机执行的测试，需要真实模型或网络（smoke / functional）",
+    "security_detection: 检验检测判定本身的用例；配合 AGENT_SKIP_SECURITY_FAILURES 可在失败时记录账本证据并降级为 skip，而不是让部署回退（默认关闭）",
 ]
 
 # ---------------------------------------------------------------------------

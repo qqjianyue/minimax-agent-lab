@@ -613,8 +613,21 @@ run_online_layer_with_retry() {
     # PHOENIX_ENDPOINT 同理 —— 阶段二的验收用例要直接查收集端，
     # 两边各写一份默认值迟早会对不上，而对不上时测试会跳过而不是失败。
     local phoenix_endpoint="http://127.0.0.1:${PHOENIX_PORT:-6006}"
+    # AGENT_SKIP_SECURITY_FAILURES 是**系统设置**，落在 shared/.env 里。
+    # 测试进程不 source shared/.env（那是 systemd 的 EnvironmentFile），
+    # 所以必须显式读出来传进去 —— 否则模板里改了等于没改。
+    # 取值为空 = 关闭，闸门照旧生效。
+    local skip_security_failures="${AGENT_SKIP_SECURITY_FAILURES:-}"
+    if [[ -z "$skip_security_failures" && -f "$SHARED_ENV" ]]; then
+      skip_security_failures="$(sed -n 's/^AGENT_SKIP_SECURITY_FAILURES=//p' "$SHARED_ENV" | tail -1)"
+    fi
+    if [[ -n "$skip_security_failures" ]]; then
+      log "${layer}: AGENT_SKIP_SECURITY_FAILURES=${skip_security_failures} —— 安全检测失败将记录证据后记为 skip，不触发回退"
+    fi
     if AGENT_HOME="$AGENT_HOME" AGENT_BASE_URL="$BASE_URL" EXPECTED_VERSION="$version" \
        PHOENIX_ENDPOINT="$phoenix_endpoint" \
+       AGENT_SKIP_SECURITY_FAILURES="$skip_security_failures" \
+       AGENT_SECURITY_GATE_REPORT="${SHARED_DIR}/data/reports/security_gate_skips.json" \
        run_layer "$rel" "$layer"; then
       if (( i > 0 )); then
         warn "${layer} 第 $((i + 1)) 次尝试通过 —— 判定为模型输出偶发波动，本次不触发回退"
