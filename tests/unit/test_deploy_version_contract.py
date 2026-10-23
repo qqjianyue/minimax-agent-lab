@@ -22,32 +22,21 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from agent_core.version import VersionInfo
+from tests.bash_support import BASH, shell_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMMON_SH = REPO_ROOT / "deploy" / "lib" / "common.sh"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None,
-    reason="需要 bash 才能执行部署脚本",
+    BASH is None,
+    reason="需要可用的 GNU bash 才能执行部署脚本",
 )
-
-
-def _shell_path(path: Path) -> str:
-    """把 Windows 路径转成 MSYS 能识别的形式。
-
-    Git Bash 认识 ``C:/a/b``，但对 ``C:\\a\\b`` 里的反斜杠处理不可靠。
-    """
-    text = str(path)
-    if os.name == "nt" and len(text) > 1 and text[1] == ":":
-        return f"/{text[0].lower()}{text[2:].replace(chr(92), '/')}"
-    return text
 
 
 def _pyproject_semver() -> str:
@@ -65,8 +54,9 @@ def _bash(script: str, **env: str) -> str:
     # 而 bash 输出的中文（如 common.sh 的"请勿直接执行"提示）是 UTF-8 字节流 ——
     # 用 GBK 解会抛 UnicodeDecodeError，用例以"解码失败"的形式挂掉，
     # 和被测逻辑毫无关系。errors="replace" 兜底：解码问题不该让用例变成非预期失败。
+    assert BASH is not None, "本用例依赖 bash，没有它就不该跑"
     result = subprocess.run(
-        ["bash", "-c", script],
+        [BASH, "-c", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -74,8 +64,8 @@ def _bash(script: str, **env: str) -> str:
         check=True,
         env={
             **os.environ,
-            "COMMON_SH": _shell_path(COMMON_SH),
-            "REPO": _shell_path(REPO_ROOT),
+            "COMMON_SH": shell_path(COMMON_SH),
+            "REPO": shell_path(REPO_ROOT),
             **env,
         },
     )
@@ -87,7 +77,7 @@ def _write_release_env(rel: Path, version: str) -> dict[str, str]:
     _bash(
         'set -euo pipefail; source "$COMMON_SH"; export_release_env "$VERSION" "$RELDIR"',
         VERSION=version,
-        RELDIR=_shell_path(rel),
+        RELDIR=shell_path(rel),
     )
     parsed: dict[str, str] = {}
     for line in (rel / ".release-env").read_text(encoding="utf-8").splitlines():
@@ -197,7 +187,7 @@ class TestVenvFingerprint:
     def test_missing_lock_yields_sentinel(self, tmp_path: Path) -> None:
         out = _bash(
             'set -euo pipefail; source "$COMMON_SH"; venv_fingerprint "$RELDIR"',
-            RELDIR=_shell_path(tmp_path),
+            RELDIR=shell_path(tmp_path),
         ).strip()
 
         assert out == "no-lock"
@@ -230,7 +220,7 @@ class TestVenvFingerprint:
     def _fingerprint(self, rel: Path) -> str:
         return _bash(
             'set -euo pipefail; source "$COMMON_SH"; venv_fingerprint "$RELDIR"',
-            RELDIR=_shell_path(rel),
+            RELDIR=shell_path(rel),
         ).strip()
 
 

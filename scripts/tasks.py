@@ -24,6 +24,7 @@ pytest-cov 默认**每次运行都会擦除**上一次的 ``.coverage``，所以
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -40,11 +41,48 @@ COV_INTEGRATION = ".coverage.l1"
 COV_COMBINED = ".coverage"
 
 
+def enable_utf8_console() -> None:
+    """把 stdout/stderr 统一切到 UTF-8 —— Windows 控制台装不下中文。
+
+    ## 为什么必须有这一步
+
+    Windows 上 Python 的标准流编码取自 ANSI 代码页：GitHub Actions 的
+    ``windows-latest`` 是 cp1252，本地中文系统是 cp936（GBK）。本文件的进度提示
+    全是中文，``print()`` 在 cp1252 下必然抛 ``UnicodeEncodeError`` ——
+    这正是 windows-latest 上的 CI 从 v0.1.4 起长期红灯的真实原因：
+    失败点在 ``cmd_check`` 打印 ``[OK] lint 通过。`` 的那一行，
+    连测试都还没开始跑。
+
+    ## 为什么切 UTF-8 就够
+
+    * GitHub Actions 的 runner 以 UTF-8 读取进程输出，切成 UTF-8 后中文正常显示；
+    * Windows 控制台对 ``_WindowsConsoleIO`` 的 UTF-8 字节走 ``WriteConsoleW``，
+      中文显示同样正常；
+    * ``errors="replace"`` 兜底 —— 编码问题不该让闸门脚本整体崩掉，
+      退化成 ``?`` 也要把闸门跑完。
+
+    流对象可能不是 ``TextIOWrapper``（被 pytest 捕获、被 ``redirect_stdout``
+    替换等），这类对象没有 ``reconfigure``，直接跳过即可。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        # 流已关闭等极端情况下重编码会失败，但不该让闸门因此崩掉
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _run(args: list[str], env: dict[str, str] | None = None) -> int:
     """在仓库根目录执行命令，返回退出码。"""
     print(f"\n$ {' '.join(args)}\n", flush=True)
     # 覆盖而非替换：调用方只想改个别变量（主要是 COVERAGE_FILE）
-    merged_env = {**os.environ, **env} if env else None
+    merged_env = {**os.environ, **(env or {})}
+    # 子进程（pytest / ruff / coverage）也统一走 UTF-8。它们各自按本机代码页
+    # 输出中文时同样会炸，而且它们的输出直接写向同一个 fd —— 父进程用 UTF-8、
+    # 子进程用 cp1252 的话，混合字节流在 CI 日志里就是乱码。
+    # setdefault：调用方显式指定时以调用方为准。
+    merged_env.setdefault("PYTHONIOENCODING", "utf-8")
     return subprocess.call(args, cwd=REPO_ROOT, env=merged_env)
 
 
@@ -218,6 +256,8 @@ COMMANDS = {
 
 
 def main() -> int:
+    # 先切编码再干活：Windows 上任何一条中文提示都可能撞上 cp1252/cp936。
+    enable_utf8_console()
     parser = argparse.ArgumentParser(description="minimax-agent 任务入口")
     parser.add_argument("command", choices=sorted(COMMANDS), help="要执行的任务")
     args = parser.parse_args()

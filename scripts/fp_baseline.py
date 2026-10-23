@@ -38,6 +38,7 @@ B8 收尾时我用 20 条正常业务提问打真实 `/chat`，得到 "allow 12/
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import statistics
@@ -51,6 +52,23 @@ from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_ROUNDS = 5
+
+
+def enable_utf8_console() -> None:
+    """把 stdout/stderr 切到 UTF-8 —— Windows 控制台默认代码页装不下中文。
+
+    完整背景见 ``scripts/tasks.py`` 里同名函数：Windows 的标准流编码取自 ANSI
+    代码页（cp1252 / cp936），中文 ``print()`` 会抛 ``UnicodeEncodeError``。
+    这个脚本刻意只用标准库、不引共享模块，所以这里内联一份。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        # 流已关闭等极端情况下重编码会失败，但不该让闸门因此崩掉
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8", errors="replace")
+
 
 #: 良性语料。刻意覆盖**几种容易触发的形态**，而不是二十句同质的"你好"：
 #: - 地址/营业时间类（Presidio 的 LOCATION 误报重灾区）
@@ -511,6 +529,8 @@ def render(report: dict[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # 先切编码：Windows 上下面每一条中文提示都可能撞上 cp1252/cp936。
+    enable_utf8_console()
     parser = argparse.ArgumentParser(
         prog="fp_baseline", description="正常业务提问的误报率基线（重复采样）"
     )
