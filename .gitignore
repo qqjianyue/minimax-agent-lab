@@ -44,6 +44,13 @@ langfuse-data/
 # 这里只是给"手动跑一次服务"留的兜底 —— 运行数据永远不该进版本库。
 audit/
 
+# 架构原型图（docs/design/）
+# 只入库最终版 HTML —— 它们是面试展示素材，双击即可打开。
+# _backup/ 是历史草稿，_shots/ 是浏览器自动截图与 report.json
+# （后者含本机绝对路径 C:\Users\...，属于机器相关噪音），都不入库。
+docs/design/_backup/
+docs/design/_shots/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能体平台架构简图（层级与流程）</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23333'/%3E%3Cpath d='M8 10h16M8 16h16M8 22h10' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #fff; color: #222; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #666; margin-bottom: 20px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin: 0 0 18px; padding: 10px 12px; border: 1px solid #eee; border-radius: 8px; background: #fafafa; font-size: 12px; color: #444; }
+  .lg-t { font-weight: 600; }
+  .lg-item { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 22px; height: 14px; border-radius: 3px; display: inline-block; }
+  .sw-plain { border: 1.5px solid #333; background: #fafafa; }
+  .sw-plan { border: 1.5px solid #333; background: #f4f6ff; }
+  .sw-red { border: 1.5px solid #c0392b; background: #fdf0f0; }
+  .sw-green { border: 1.5px solid #0a7d33; background: #f0faf2; }
+  .sw-blue { border: 2px dashed #1a56a0; background: #f0f6ff; }
+  .sw-dash { border: 1.5px dashed #8a6d3b; background: #fdf9ef; }
+  .sw-client { border: 1.5px dashed #999; background: #f0f0f0; }
+  .sw-side { border: 1.5px solid #6b4fa1; background: #f8f5fd; }
+  .main { display: flex; flex-direction: column; gap: 16px; }
+  .flow { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .arrow { text-align: center; color: #666; font-size: 12px; padding: 0; }
+  .box { border: 1.5px solid #333; border-radius: 8px; padding: 10px 14px; text-align: center; }
+  .box .t { font-size: 15px; font-weight: 600; }
+  .box .s { font-size: 12px; color: #666; }
+  .box-red { border-color: #c0392b; background: #fdf0f0; }
+  .box-red .t { color: #c0392b; }
+  .box-blue { border-color: #1a56a0; background: #f0f6ff; }
+  .box-blue .t { color: #1a56a0; }
+  .box-green { border-color: #0a7d33; background: #f0faf2; }
+  .box-green .t { color: #0a7d33; }
+  .box-plain { background: #fafafa; }
+  .box-plan { background: #f4f6ff; }
+  .box-dashed { border: 1.5px dashed #8a6d3b; background: #fdf9ef; }
+  .box-dashed .t { color: #8a6d3b; font-size: 13px; }
+  .box-client { border: 1.5px dashed #999; background: #f5f5f5; }
+  .box-client .t { color: #777; font-size: 13px; }
+  .toolrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .toolrow .toolcol { flex: 1; min-width: 200px; }
+  .toolnote { text-align: center; color: #888; font-size: 11px; margin-top: 3px; }
+  .side { border: 1.5px solid #6b4fa1; border-radius: 8px; background: #f8f5fd; padding: 12px 10px; }
+  .side h2 { font-size: 15px; color: #6b4fa1; text-align: center; margin-bottom: 8px; }
+  .side p { font-size: 12px; color: #555; text-align: center; line-height: 1.8; }
+  .side .note { font-size: 11px; color: #999; text-align: center; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 8px; }
+  @media (min-width: 768px) {
+    .main { flex-direction: row; gap: 18px; align-items: stretch; }
+    .flow { flex: 1; }
+    .side { width: 200px; flex-shrink: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===== 可修改：页面主标题 ===== -->
+  <h1>智能体平台 · 层级关系与流程</h1>
+  <!-- ===== 可修改：副标题说明 ===== -->
+  <p class="sub">纵向为主流程，右侧为贯穿全链路的横切面。简图不含各层内部组件。</p>
+
+  <!-- ===== 可修改：图例（含义随各层颜色/线型同步调整） ===== -->
+  <div class="legend">
+    <span class="lg-t">图例：</span>
+    <span class="lg-item"><i class="sw sw-plain"></i>灰白实线 = 用户交互层（入口）</span>
+    <span class="lg-item"><i class="sw sw-plan"></i>淡蓝实线 = Agent 编排层（核心处理）</span>
+    <span class="lg-item"><i class="sw sw-red"></i>红色实线 = 安全检测（输入拦截 / 输出终检）</span>
+    <span class="lg-item"><i class="sw sw-green"></i>绿色实线 = 流程终点（正常返回）</span>
+    <span class="lg-item"><i class="sw sw-blue"></i>蓝色虚线 = 外部大模型后端（信任边界之外）</span>
+    <span class="lg-item"><i class="sw sw-dash"></i>黄褐虚线 = 服务端工具（后台可调用 · 现有）</span>
+    <span class="lg-item"><i class="sw sw-client"></i>灰色虚线 = 客户端工具通道（扩展规划 · 未实现）</span>
+    <span class="lg-item"><i class="sw sw-side"></i>紫色边框 = 横切面（可观测性与治理）</span>
+  </div>
+
+  <div class="main">
+
+    <!-- 主流程列 -->
+    <div class="flow">
+
+      <!-- ===== 可修改：第 1 层 用户交互层 ===== -->
+      <div class="box box-plain">
+        <div class="t">用户交互层</div>
+        <div class="s">CLI / Web UI / API</div>
+      </div>
+
+      <!-- ===== 可修改：箭头文字 ===== -->
+      <div class="arrow">▼ 用户输入</div>
+
+      <!-- ===== 可修改：第 2 层 输入安全检测 ===== -->
+      <div class="box box-red">
+        <div class="t">输入安全检测</div>
+        <div class="s">前置拦截 · 同步执行 · 不通过即阻断</div>
+      </div>
+
+      <div class="arrow">▼ 通过</div>
+
+      <!-- ===== 可修改：第 3 层 Agent 编排层 ===== -->
+      <div class="box box-plan">
+        <div class="t">Agent 编排层</div>
+        <div class="s">规划 → 记忆 → 工具路由 → 推理循环</div>
+      </div>
+
+      <!-- ===== 可修改：旁支区 ===== -->
+      <div class="toolrow">
+        <!-- ===== 可修改：服务端工具（现有） ===== -->
+        <div class="toolcol box box-dashed">
+          <div class="t">服务端工具</div>
+          <div class="s">工具执行 / 检索增强 · 调用前过安全检测</div>
+        </div>
+        <!-- ===== 可修改：客户端工具（扩展规划 · 未实现） ===== -->
+        <div class="toolcol box box-client">
+          <div class="t">客户端工具（扩展）</div>
+          <div class="s">CLI / 浏览器 / 本地程序 · 执行权在用户设备</div>
+        </div>
+      </div>
+      <div class="toolnote">调用权都在 Agent 编排层：服务端工具在进程内执行；客户端工具经下发通道执行，结果回传过 tool_result_guard</div>
+
+      <div class="arrow">▼ 模型调用</div>
+
+      <!-- ===== 可修改：第 4 层 大模型后端 ===== -->
+      <div class="box box-blue">
+        <div class="t">大模型后端（MiniMax）</div>
+        <div class="s">外部资产 · 位于信任边界之外 · 遥测在调用侧闭环</div>
+      </div>
+
+      <div class="arrow">▼ 模型输出</div>
+
+      <!-- ===== 可修改：第 5 层 输出安全检测 ===== -->
+      <div class="box box-red">
+        <div class="t">输出安全检测</div>
+        <div class="s">终检 / 脱敏 · 必须发生在响应返回用户之前</div>
+      </div>
+
+      <div class="arrow">▼ 通过</div>
+
+      <!-- ===== 可修改：终点 返回用户响应 ===== -->
+      <div class="box box-green">
+        <div class="t">返回用户响应</div>
+        <div class="s">已按策略动作处理（放行 / 脱敏 / 阻断 / 升级）</div>
+      </div>
+
+    </div>
+
+    <!-- 横切面栏 -->
+    <!-- ===== 可修改：横切面标题与条目 ===== -->
+    <div class="side">
+      <h2>可观测性与治理</h2>
+      <p>贯穿每一层：</p>
+      <p>· 全链路 Trace</p>
+      <p>· 指标与成本</p>
+      <p>· 审计留痕（append-only）</p>
+      <p>· 存储：Phoenix + 本地账本</p>
+      <div class="note">不影响数据流 · 横切面</div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

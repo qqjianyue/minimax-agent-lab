@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能体平台架构 L2 · 可观测性与治理</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%236b4fa1'/%3E%3Cpath d='M8 10h16M8 16h16M8 22h10' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #fff; color: #222; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #666; margin-bottom: 14px; }
+
+  /* 图例 */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin: 0 0 18px; padding: 10px 12px; border: 1px solid #eee; border-radius: 8px; background: #fafafa; font-size: 12px; color: #444; }
+  .lg-t { font-weight: 600; }
+  .lg-item { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 22px; height: 14px; border-radius: 3px; display: inline-block; }
+  .sw-done { border: 1.5px solid #333; background: #fff; }
+  .sw-todo { border: 1.5px dashed #999; background: #f2f2f2; }
+  .sw-span { border: 1px solid #6b4fa1; background: #e9e2f6; border-radius: 10px; width: 26px; }
+  .sw-audit { border: 1.5px solid #b07d1a; background: #fdf6e3; }
+
+  .main { display: flex; flex-direction: column; gap: 16px; }
+  .flow { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .arrow { text-align: center; color: #666; font-size: 12px; padding: 0; }
+  .box { border: 1.5px solid #333; border-radius: 8px; padding: 8px 12px; text-align: center; }
+  .box .t { font-size: 14px; font-weight: 600; }
+  .box .s { font-size: 11.5px; color: #666; }
+  .box-red { border-color: #c0392b; background: #fdf0f0; }
+  .box-red .t { color: #c0392b; }
+  .box-blue { border-color: #1a56a0; background: #f0f6ff; }
+  .box-blue .t { color: #1a56a0; }
+  .box-green { border-color: #0a7d33; background: #f0faf2; }
+  .box-green .t { color: #0a7d33; }
+  .box-plain { background: #fafafa; }
+  .box-plan { background: #f4f6ff; }
+  .box-dashed { border: 1.5px dashed #8a6d3b; background: #fdf9ef; }
+  .box-dashed .t { color: #8a6d3b; font-size: 12.5px; }
+  .box-client { border: 1.5px dashed #999; background: #f5f5f5; }
+  .box-client .t { color: #777; font-size: 12.5px; }
+  .toolrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .toolrow .toolcol { flex: 1; min-width: 230px; }
+  .toolnote { text-align: center; color: #888; font-size: 11px; margin-top: 4px; }
+
+  /* 埋点标签 */
+  .spans { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; margin-top: 6px; }
+  .span-tag { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #6b4fa1; border-radius: 10px; background: #e9e2f6; padding: 2px 8px; font-size: 11px; color: #4a3678; font-family: Consolas, "Courier New", monospace; }
+  .span-tag .st { font-family: inherit; color: #6b4fa1; font-weight: 600; }
+  .span-todo { border-style: dashed; background: #f2eefb; color: #8a7bb5; }
+  .audit-note { font-size: 11px; color: #b07d1a; text-align: center; margin-top: 4px; }
+
+  /* 横切面 */
+  .side { border: 1.5px solid #6b4fa1; border-radius: 8px; background: #f8f5fd; padding: 12px 12px; }
+  .side h2 { font-size: 15px; color: #6b4fa1; text-align: center; margin-bottom: 10px; }
+  .chain { display: flex; flex-direction: column; gap: 5px; }
+  .cbox { border: 1.5px solid #6b4fa1; border-radius: 8px; background: #fff; padding: 7px 10px; font-size: 12px; }
+  .cbox .ct { font-weight: 600; color: #6b4fa1; font-size: 12.5px; }
+  .cbox .cs { color: #555; font-size: 11.5px; margin-top: 2px; line-height: 1.6; }
+  .carrow { text-align: center; color: #6b4fa1; font-size: 11px; }
+  .cabox { border: 1.5px solid #b07d1a; border-radius: 8px; background: #fdf6e3; padding: 7px 10px; font-size: 12px; }
+  .cabox .ct { font-weight: 600; color: #b07d1a; font-size: 12.5px; }
+  .cabox .cs { color: #6b5b26; font-size: 11.5px; margin-top: 2px; line-height: 1.6; }
+  .todo { border: 1.5px dashed #999; border-radius: 8px; background: #f5f5f5; padding: 8px 10px; margin-top: 10px; }
+  .todo .tt { font-size: 12.5px; font-weight: 600; color: #555; margin-bottom: 4px; }
+  .todo ul { margin: 0; padding-left: 16px; font-size: 11.5px; color: #666; line-height: 1.75; }
+
+  @media (min-width: 860px) {
+    .main { flex-direction: row; gap: 18px; align-items: flex-start; }
+    .flow { flex: 1.15; }
+    .side { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===== 可修改：L2 标题 ===== -->
+  <h1>智能体平台 L2 · 可观测性与治理</h1>
+  <!-- ===== 可修改：副标题 ===== -->
+  <p class="sub">主流程标注埋点位置与 span 名；横切面标注组件与数据路径。实线=已实现，虚线=拓展规划。</p>
+
+  <!-- ===== 可修改：图例 ===== -->
+  <div class="legend">
+    <span class="lg-t">图例：</span>
+    <span class="lg-item"><i class="sw sw-done"></i>实线 = 已实现</span>
+    <span class="lg-item"><i class="sw sw-todo"></i>灰色虚线 = 未实现（拓展规划）</span>
+    <span class="lg-item"><i class="sw sw-span"></i>紫色标签 = 埋点 span（trace）</span>
+    <span class="lg-item"><i class="sw sw-audit"></i>琥珀色 = 审计账本（合规留痕）</span>
+  </div>
+
+  <div class="main">
+
+    <!-- ===== 主流程：埋点位置 ===== -->
+    <div class="flow">
+
+      <!-- 1 用户交互层 -->
+      <!-- ===== 可修改：第 1 层 ===== -->
+      <div class="box box-plain">
+        <div class="t">用户交互层</div>
+        <div class="s">/chat（编排路径）· /guard/inspect（纯检测）· /tools/execute（工具执行）</div>
+        <div class="spans">
+          <span class="span-tag"><span class="st">span</span> agent.request</span>
+        </div>
+        <div class="audit-note">根 span 的 request.id 与审计账本同值，贯穿一次请求</div>
+      </div>
+
+      <div class="arrow">▼ 用户输入</div>
+
+      <!-- 2 输入安全检测 -->
+      <!-- ===== 可修改：第 2 层 ===== -->
+      <div class="box box-red">
+        <div class="t">输入安全检测</div>
+        <div class="s">L1 规则 → L2 Presidio → L3 嵌入 → L4 Judge（分层触发，命中即停）</div>
+        <div class="spans">
+          <span class="span-tag"><span class="st">span</span> input_guard</span>
+        </div>
+        <div class="audit-note">span 记 guard.action / rule / latency_ms / detectors / hit_labels / fail_mode；判定后同步写审计记录</div>
+      </div>
+
+      <div class="arrow">▼ 通过</div>
+
+      <!-- 3 Agent 编排层 -->
+      <!-- ===== 可修改：第 3 层 ===== -->
+      <div class="box box-plan">
+        <div class="t">Agent 编排层</div>
+        <div class="s">规划 → 记忆 → 工具路由 → 推理循环（LangGraph）</div>
+        <div class="spans">
+          <span class="span-tag"><span class="st">span</span> llm_call · 规划</span>
+          <span class="span-tag span-todo"><span class="st">span</span> retrieval_guard（B8 预留）</span>
+        </div>
+        <div class="audit-note">llm_call：OpenInference LLM span，token 用量 + 人民币成本（FT-11）；retrieval_guard 结构已就位，检索启用后激活</div>
+      </div>
+
+      <div class="arrow">▼ 调用</div>
+
+      <!-- 4 工具执行 / 检索增强 -->
+      <!-- ===== 可修改：旁支区（服务端现有 + 客户端扩展） ===== -->
+      <div class="toolrow">
+        <!-- ===== 可修改：服务端工具（现有） ===== -->
+        <div class="toolcol box box-dashed">
+          <div class="t">服务端工具</div>
+          <div class="s">工具执行 / 检索增强 · 调用前过安全检测（工具参数 / 工具结果）</div>
+          <div class="spans">
+            <span class="span-tag"><span class="st">span</span> tool_guard</span>
+            <span class="span-tag"><span class="st">span</span> tool_call</span>
+            <span class="span-tag"><span class="st">span</span> tool_result_guard</span>
+          </div>
+          <div class="audit-note">tool_guard=要不要执行（策略判定）；tool_call=执行成没成（status/duration，失败也必须写）；tool_result_guard 关短路，返回内容过全量检测</div>
+        </div>
+        <!-- ===== 可修改：客户端工具（扩展 · 未实现） ===== -->
+        <div class="toolcol box box-client">
+          <div class="t">客户端工具（扩展）</div>
+          <div class="s">CLI / 浏览器 / 本地程序 · 执行权在用户设备</div>
+          <div class="spans">
+            <span class="span-tag span-todo"><span class="st">span</span> tool_guard（意图）</span>
+            <span class="span-tag span-todo"><span class="st">span</span> 下发通道（待建）</span>
+          </div>
+          <div class="audit-note">调用权在编排层；意图过 tool_guard 后经下发通道到客户端执行，用户在场二次确认；返回内容按不可信数据处理，回传过 tool_result_guard</div>
+        </div>
+      </div>
+      <div class="toolnote">两条工具通道的埋点都会落 trace 与审计账本</div>
+
+      <div class="arrow">▼ 模型调用</div>
+
+      <!-- 5 大模型后端 -->
+      <!-- ===== 可修改：第 4 层 ===== -->
+      <div class="box box-blue">
+        <div class="t">大模型后端（MiniMax）</div>
+        <div class="s">外部资产 · 信任边界之外 · 遥测在调用侧闭环</div>
+        <div class="spans">
+          <span class="span-tag"><span class="st">span</span> llm_call（包住 HTTP 调用）</span>
+        </div>
+        <div class="audit-note">span 属性：llm.token_count.prompt/completion/cache_read/total、llm.cost.*、单价、model_name；捕获 prompt 原文受 capture_prompts=false 出口脱敏管辖</div>
+      </div>
+
+      <div class="arrow">▼ 模型输出</div>
+
+      <!-- 6 输出安全检测 -->
+      <!-- ===== 可修改：第 5 层 ===== -->
+      <div class="box box-red">
+        <div class="t">输出安全检测</div>
+        <div class="s">终检 / 脱敏 · 必须发生在响应返回用户之前</div>
+        <div class="spans">
+          <span class="span-tag"><span class="st">span</span> output_guard</span>
+        </div>
+        <div class="audit-note">同 input_guard 的 guard.* 属性口径；每次判定同时进审计账本</div>
+      </div>
+
+      <div class="arrow">▼ 通过</div>
+
+      <!-- 7 返回 -->
+      <!-- ===== 可修改：终点 ===== -->
+      <div class="box box-green">
+        <div class="t">返回用户响应</div>
+        <div class="s">已按策略动作处理（放行 / 脱敏 / 阻断 / 升级）</div>
+      </div>
+
+    </div>
+
+    <!-- ===== 横切面：组件处理什么数据 ===== -->
+    <div class="side">
+      <h2>可观测性与治理 · 数据路径</h2>
+      <div class="chain">
+
+        <!-- ===== 可修改：埋点门面 ===== -->
+        <div class="cbox">
+          <div class="ct">埋点门面 Instrumentation（src/telemetry/tracing.py）</div>
+          <div class="cs">唯一入口：trace / guard / llm_call / tool_call。span 名与属性口径在此固化，业务代码不直接写属性</div>
+        </div>
+        <div class="carrow">▼ span 属性（出口统一拦截）</div>
+
+        <!-- ===== 可修改：脱敏 ===== -->
+        <div class="cbox">
+          <div class="ct">出口脱敏 telemetry/redaction.py</div>
+          <div class="cs">凭据类（api_key/token/secret）直接丢弃；prompt 原文类键名保留、内容占位；PII 递归脱敏（身份证/手机号/银行卡）。不依赖调用方自觉</div>
+        </div>
+        <div class="carrow">▼ TelemetryPort</div>
+
+        <!-- ===== 可修改：OTel ===== -->
+        <div class="cbox">
+          <div class="ct">OtelTelemetry（OTLP/HTTP）</div>
+          <div class="cs">BatchSpanProcessor 后台批量发送；导出失败不冒泡（观测挂了不拖垮业务）；进程退出时 shutdown 冲刷队列；缺 OTel 依赖自动回退 NoOp</div>
+        </div>
+        <div class="carrow">▼ OTLP /v1/traces</div>
+
+        <!-- ===== 可修改：Phoenix ===== -->
+        <div class="cbox">
+          <div class="ct">Phoenix 自托管（D4 · v20）</div>
+          <div class="cs">端口 6006 · SQLite 单文件 · 数据卷 shared/data/phoenix（与 releases 分离，回退不丢 trace）· healthz 冒烟检查</div>
+        </div>
+        <div class="carrow">▼ GraphQL 查询</div>
+
+        <!-- ===== 可修改：指标脚本 ===== -->
+        <div class="cbox">
+          <div class="ct">指标汇总 phoenix_metrics.py</div>
+          <div class="cs">Q/P/C/S 四组（质量/性能/成本/安全），口径见 docs/metrics.md；CLI 可脚本化、可进 CI；含分页防静默截断</div>
+        </div>
+
+        <!-- ===== 可修改：审计账本 ===== -->
+        <div class="cabox">
+          <div class="ct">审计账本 AuditLedger（append-only）</div>
+          <div class="cs">JSONL @ shared/audit/ledger.jsonl · 保留 365 天 · 原子重写清理 · 单进程独占。每条判定记 request_id / tenant / use_case / stage / action / rule / evidence（落盘前已脱敏）</div>
+        </div>
+
+        <!-- ===== 可修改：拓展规划 ===== -->
+        <div class="todo">
+          <div class="tt">拓展（未实现 · 规划中）</div>
+          <ul>
+            <li>OTel Metrics 运行时管线（计数器 / 直方图，独立于 trace 的事后聚合）</li>
+            <li>阈值告警（缓存命中率 / 工具失败率 / 检测器失败数）</li>
+            <li>自定义成本与缓存命中率大屏（人民币口径，固化 SQL / 查询）</li>
+            <li>Phoenix 侧 trace 保留策略与清理</li>
+            <li>跨进程审计（文件锁 / SQLite，Q8 预留）</li>
+            <li>L4 Judge 语义子 span（prompt_injection_check 等叶子细分）</li>
+            <li>retrieval_guard 数据激活（B8 检索启用后）</li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
