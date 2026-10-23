@@ -61,10 +61,16 @@ def _pyproject_semver() -> str:
 
 
 def _bash(script: str, **env: str) -> str:
+    # encoding 必须显式指定：Windows 上 Python 默认按 GBK 解码子进程输出，
+    # 而 bash 输出的中文（如 common.sh 的"请勿直接执行"提示）是 UTF-8 字节流 ——
+    # 用 GBK 解会抛 UnicodeDecodeError，用例以"解码失败"的形式挂掉，
+    # 和被测逻辑毫无关系。errors="replace" 兜底：解码问题不该让用例变成非预期失败。
     result = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
         env={
             **os.environ,

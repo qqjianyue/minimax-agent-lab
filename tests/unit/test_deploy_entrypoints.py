@@ -14,6 +14,7 @@ exit code 是 0。这种失败模式比报错危险得多：报错的部署至�
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,6 +36,19 @@ ENTRY_SCRIPTS = (
     "status.sh",
     "sync-mask.sh",
 )
+
+
+def _shell_path(path: Path) -> str:
+    """把 Windows 路径转成 MSYS 能识别的形式。
+
+    Git Bash 认识 ``C:/a/b``，但对 ``C:\\a\\b`` 里的反斜杠处理不可靠 ——
+    直接把 Windows 路径喂给 ``bash`` 可能得到 WinError 5（拒绝访问），
+    因为 MSYS 把带反斜杠的路径当成了转义序列。
+    """
+    text = str(path)
+    if os.name == "nt" and len(text) > 1 and text[1] == ":":
+        return f"/{text[0].lower()}{text[2:].replace(chr(92), '/')}"
+    return text
 
 
 def _meaningful_lines(path: Path) -> list[str]:
@@ -86,9 +100,11 @@ def test_script_passes_syntax_check(name: str) -> None:
         pytest.skip(f"{name} 不存在")
 
     result = subprocess.run(
-        ["bash", "-n", str(path)],
+        ["bash", "-n", _shell_path(path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert result.returncode == 0, f"{name} 语法错误:\n{result.stderr}"
@@ -99,9 +115,11 @@ def test_common_sh_refuses_direct_execution() -> None:
     """公共库被误当脚本执行时要明确拒绝，而不是静默什么都不做。"""
     common = DEPLOY_DIR / "lib" / "common.sh"
     result = subprocess.run(
-        ["bash", str(common)],
+        ["bash", _shell_path(common)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
