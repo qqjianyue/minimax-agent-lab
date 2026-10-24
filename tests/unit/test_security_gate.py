@@ -303,6 +303,7 @@ class TestDowngradeScope:
             ("TestFT12AuditIntegrity", "test_audit_has_full_provenance"),
             ("TestFT13OrchestratedChat", "test_max_steps_field_present"),
             ("TestThinEndToEnd", "test_chat_does_not_consume_model_when_blocked"),
+            ("TestDetectorsWired", "test_guard_inspect_works"),
             ("TestCredentialHygiene", "test_no_endpoint_leaks_the_api_key"),
             ("TestLedgerWrites", "test_chat_appends_input_and_output_records"),
             (None, "test_something"),
@@ -312,6 +313,7 @@ class TestDowngradeScope:
             "audit-integrity",
             "orchestration-shape",
             "injection-still-blocked",
+            "injection-still-blocked-guard-inspect",
             "credential-hygiene",
             "ledger-writes",
             "no-class",
@@ -348,6 +350,30 @@ class TestDowngradeScope:
 
     def test_scope_ignores_missing_method(self) -> None:
         assert security_gate.in_security_scope("TestThinEndToEnd", None) is False
+
+    def test_p02_exposed_clean_text_test_is_method_scoped(self) -> None:
+        """P0-2 在 L2 冒烟里的暴露点：良性提问断言 allow。
+
+        实测（0.1.26 部署）：``/guard/inspect`` 对"定期存款利率是多少"判
+        ``block``，账本形状是 ``matched=false`` / ``rule_name=null`` /
+        ``evidence=[]`` —— 检测器没跑完触发的 fail-closed，不是命中的形状。
+        这类失败与 L3 的 ``TestFT01NormalQuery`` 同源，应当同样可降级。
+
+        但同类的另一条断言（注入必拦）是确定性的，必须保持不可降级 ——
+        这正是需要方法级粒度、而不是把整个类放行的原因。
+        """
+        assert (
+            security_gate.in_security_scope(
+                "TestDetectorsWired", "test_clean_text_allowed"
+            )
+            is True
+        )
+        assert (
+            security_gate.in_security_scope(
+                "TestDetectorsWired", "test_guard_inspect_works"
+            )
+            is False
+        )
 
 
 class TestFailureSummaryQuality:

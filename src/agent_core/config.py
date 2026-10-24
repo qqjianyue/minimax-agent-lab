@@ -128,7 +128,7 @@ class AuditSettings(BaseModel):
     审计账本是**合规留痕**，保留期通常更长，且不可被观测系统的策略带偏。
 
     ``root``：账本根目录。相对路径 ``path`` 会挂在 ``root`` 下。
-    生产部署必须指向**跨版本共享目录**（如 ``%h/shared``，systemd 已注入
+    生产部署必须指向**跨版本共享目录**（如 ``%h/shared/data``，systemd 已注入
     ``MINIMAX_AGENT_AUDIT__ROOT``）—— 审计历史随版本走会丢：
     版本更新切 symlink 后新版本在新目录从零写账本，旧记录"消失"，
     回退时账本跳变，release 清理时历史被直接删除。
@@ -138,7 +138,7 @@ class AuditSettings(BaseModel):
 
     enabled: bool = True
     root: Path | None = None
-    #: 相对路径会挂在 root 下（生产为 shared/audit/，跨版本共享，回退不丢历史）
+    #: 相对路径会挂在 root 下（生产为 shared/data/audit/，跨版本共享，回退不丢历史）
     path: Path = Path("audit/ledger.jsonl")
     retention_days: int = Field(default=365, ge=1)
 

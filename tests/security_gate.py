@@ -49,6 +49,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from tests import target_support
+
 #: 开关的环境变量名。默认关闭，必须显式打开。
 SKIP_ENV = "AGENT_SKIP_SECURITY_FAILURES"
 
@@ -96,9 +98,24 @@ SECURITY_DETECTION_CLASSES = frozenset(
 #:   这条是确定性的（输入侧 L1 必中），**挂了就是真回归，绝不能降级**。
 #:
 #: 整类放行会把后者一起埋掉，所以这里必须能精确到方法。
+#:
+#: ``TestDetectorsWired::test_clean_text_allowed`` 同理：它断言的是
+#: **良性提问应放行**，与 L3 的 ``TestFT01NormalQuery``、L2 的
+#: ``test_chat_reaches_the_model`` 是同一类断言，暴露在同两个 flaky 源之下：
+#:
+#: - **P0-1**：模型偶发把正常提问判成攻击；
+#: - **P0-2**：检测器没跑完（judge 响应不可用）→ 按 fail-closed 阻断。
+#:   实测 2026-10-24 的 0.1.26 部署：``/guard/inspect`` 对"定期存款利率是多少"
+#:   判 ``block``，而账本记录是 ``matched=false`` / ``rule_name=null`` /
+#:   ``evidence=[]`` —— **fail-closed 的形状，不是命中的形状**，
+#:   且同一时刻 MiniMax 调用返回的是 HTTP 200（不是超时）。
+#:
+#: 而它同类的兄弟 ``test_guard_inspect_works``（注入必拦）是确定性的
+#: （输入侧 L1 必中），**必须保持不可降级** —— 否则真回归会被一起埋掉。
 SECURITY_DETECTION_TESTS = frozenset(
     {
         "TestThinEndToEnd::test_chat_reaches_the_model",
+        "TestDetectorsWired::test_clean_text_allowed",
     }
 )
 
@@ -180,11 +197,16 @@ def record_response_request_id(response: Any) -> None:
 def ledger_path() -> Path | None:
     """定位审计账本。
 
-    候选路径依次尝试，**找不到就返回 None** —— 调用方必须把"没找到账本"
-    这件事如实写进证据，而不是安静地少一段证据。半截证据比没有证据更危险，
-    因为它看起来像是完整的。
+    **单一真源**：路径由 :func:`tests.target_support.audit_ledger_path` 给出 ——
+    它读的是**已部署的 systemd unit**，也就是服务进程真正读的那份配置。
+
+    本模块曾经自己维护一份候选路径清单。那是同一事实的第二份副本，
+    账本位置一变就静默失效：降级报告显示"未找到审计账本，证据不完整"，
+    而**半截证据看起来是完整的** —— 比没有证据更危险。
+
+    找不到就返回 ``None`` —— 调用方必须把"没找到账本"这件事如实写进证据，
+    而不是安静地少一段证据。
     """
-    candidates: list[Path] = []
     override = os.environ.get(LEDGER_ENV)
     if override:
         # 显式指定是**排他的**：指定了就只看它。静默回退到另一个账本，
@@ -192,19 +214,8 @@ def ledger_path() -> Path | None:
         # 因为它看起来是完整的。
         path = Path(override)
         return path if path.is_file() else None
-    root = os.environ.get("MINIMAX_AGENT_AUDIT__ROOT")
-    if root:
-        candidates.append(Path(root) / "audit" / "ledger.jsonl")
-    agent_home = os.environ.get("AGENT_HOME")
-    if agent_home:
-        candidates.append(Path(agent_home) / "shared" / "audit" / "ledger.jsonl")
-        candidates.append(Path(agent_home) / "audit" / "ledger.jsonl")
-    home = os.environ.get("HOME") or os.path.expanduser("~")
-    candidates.append(Path(home) / ".minimax-agent-home" / "shared" / "audit" / "ledger.jsonl")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
+    path = target_support.audit_ledger_path()
+    return path if path.is_file() else None
 
 
 def collect_ledger_evidence(request_ids: list[str]) -> dict[str, Any]:

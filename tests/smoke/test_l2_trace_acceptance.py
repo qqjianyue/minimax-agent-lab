@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 import pytest
-from tests.target_support import base_url, phoenix_endpoint
+from tests.target_support import chat_until_model_called, phoenix_endpoint
 
 #: 一次请求**必定**产生的 span。少任何一个都说明埋点断了。
 REQUIRED_SPANS = {"agent.request", "input_guard", "llm_call", "output_guard"}
@@ -201,19 +201,20 @@ def traced_run(http: httpx.Client) -> tuple[dict[str, Any], set[str], float]:
     降级成 skip 的结果是"遥测悄悄坏了、部署照样记成功"，而这正是
     这组用例要消灭的那件事。
 
+    但**取样要抗住上游的偶发 fail-closed**（P0-2）：输入侧 L4 judge 偶发
+    响应解析不出来 → 检测器 ERROR → fail-closed → 这条良性提问没走到模型 →
+    压根没有 trace 可看，整组用例会在 setup 阶段**报错**。
+    setup 阶段的错误不在降级闸门的处理范围内（闸门只处理 call 阶段的失败），
+    于是一次上游抖动会把一个健康的版本回退掉。
+
+    所以这里取样最多试 :func:`chat_until_model_called` 说的次数。
+    **断言一条都没改**：仍然要求这次真的调用了模型，拿不到有效样本照样红。
+
     返回 ``since`` 是为了让后续断言只针对**这一次**运行，
     而不是"项目里最近一条 llm_call"——后者在并发或旧数据堆积时会指错对象。
     """
     since = time.time()
-    response = http.post(
-        f"{base_url()}/chat",
-        json={"message": "用一句话介绍你们的定期存款产品"},
-        timeout=120.0,
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["llm_called"] is True, "本次运行没有真正调用模型，不构成有效的验收样本"
-
+    body = chat_until_model_called(http, "用一句话介绍你们的定期存款产品")
     names = _wait_for_trace(since)
     return body, names, since
 

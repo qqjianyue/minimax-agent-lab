@@ -46,6 +46,7 @@ import time
 
 import httpx
 import pytest
+from tests.target_support import chat_until_model_called
 
 VALID_CN_ID = "11010519491231002X"
 VALID_CARD = "4539578763621486"
@@ -324,7 +325,11 @@ class TestFT13OrchestratedChat:
     """
 
     def test_response_carries_orchestration_evidence(self, http: httpx.Client) -> None:
-        body = chat(http, "请用一句话介绍定期存款")
+        # 取样要抗住上游偶发 fail-closed（P0-2）：输入侧 L4 judge 偶发响应解析
+        # 不出来 → 检测器 ERROR → fail-closed → 良性提问没走到模型。
+        # 这条用例**不在**降级闸门范围内（结构断言，失败即真问题），
+        # 所以不能靠闸门兜底 —— 一次上游抖动就会误回退一个健康版本。
+        body = chat_until_model_called(http, "请用一句话介绍定期存款")
 
         assert body["llm_called"] is True
         assert body["steps"] >= 1  # 至少一轮规划
