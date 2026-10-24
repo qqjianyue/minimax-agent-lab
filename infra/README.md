@@ -75,9 +75,14 @@ sha256 + 体积），**写入部署根 `integrity/models/`（不在 repo 副本 
 
 | 组件 | 版本 | 状态 | 备注 |
 |---|---|---|---|
-| `phoenix` | `v20.20.0`（镜像 ID 锚点，见 BOM） | 已部署（2026-10-10） | 容器 minimax-agent-phoenix，healthcheck 用 exec 直调 python3.13（镜像无 /bin/sh）；应用 telemetry 已开启，FT-11 已解锁 |
-| `embedding-model` | `bge-base-zh-v1.5@f03589ce` | 已部署（2026-10-10） | 目标机直连下载（HF_ENDPOINT 镜像备用）；完整性凭证在 integrity/models/ |
-| `spacy-model` | `3.8.0` | 已部署（2026-10-10） | 装进 shared/venv；wheel 持久化在 /data/workspace/tmp |
+| `phoenix` | `20.20.0`（tag 已固定，digest 锚点见 BOM） | 已部署（2026-10-24 复核） | 容器 minimax-agent-phoenix，healthcheck 用 exec 直调 python3.13（镜像无 /bin/sh）；trace 落库已实测（default 项目 traceCount=2036）；组件配置在目标机仓库副本里，**不进 release** |
+| `embedding-model` | `bge-base-zh-v1.5@f03589ce` | 已部署（2026-10-10） | 目标机直连下载（HF_ENDPOINT 镜像备用）；完整性凭证在 integrity/models/；实测 12 文件 sha256 全通过 |
+| `spacy-model` | `3.8.0` | 已部署（2026-10-10） | 装进 shared/venv；wheel 持久化在 /data/workspace/tmp；实测 en/zh 双模型 `spacy.load` 通过 |
+
+> **组件状态是"实测"出来的，不是"声明"出来的。** 复核方式见
+> 《开发方案：组件拆分与 DevOps 交付流程.md》的待跟进任务区：镜像 ID、
+> sha256 完整性、`spacy.load` 真加载、容器 healthcheck、trace 落库计数，
+> 每项都有对应的可执行校验。
 
 ---
 
@@ -90,7 +95,13 @@ sha256 + 体积），**写入部署根 `integrity/models/`（不在 repo 副本 
 - **D2 安装目标**：`shared/venv`（与应用大依赖同 venv，部署指纹复用机制
   天然兼容）。校验以 `spacy.load` **真实可加载**为准（走一次真实解析），
   版本精确 pin `3.8.0` —— 800 MiB 资产跟 latest 会让应用回退失去意义。
-- **应用接缝（B5 落地）**：C5 detector-ml 启动时校验模型完整性 ——
-  embedding 调 `infra/models/setup.sh verify`、spacy 调
-  `infra/spacy/setup.sh verify`，失败拒绝启动并指向对应脚本；
-  同时 `deploy/status.sh` 增加两行完整性检查（与 Phoenix 状态行并列）。
+- **应用接缝（B5 落地）**：⚠️ **未落地** —— 这里原本写着"C5 detector-ml
+  启动时校验模型完整性，失败拒绝启动"，但代码里并没有这条路径：
+  `embedders.py` 只做 `import sentence_transformers` + 目录探测 + 加载，
+  `presidio_pii.py` 只做 import + `spacy.load`，**两者都不调用
+  `setup.sh verify`、都不校验 sha256**；而 `container.py` 对检测器构建失败
+  的处理是**跳过并记 warning**，与"拒绝启动"正好相反（P0-2 即此）。
+  `deploy/status.sh` 里也没有那两行完整性检查。
+  后果：D1/D2 的完整性机制目前**只有 setup.sh 自己会调** —— 模型文件被截断
+  或污染时，模型照常加载、检测结果悄悄变差，全程无信号。
+  跟进任务见《开发方案：组件拆分与 DevOps 交付流程.md》待跟进任务区。

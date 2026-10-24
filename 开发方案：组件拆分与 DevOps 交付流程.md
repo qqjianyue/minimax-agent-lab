@@ -2,9 +2,12 @@
 
 > **文档定位**：《本地 Agent 技术架构方案》回答"系统长什么样"，《面试准备任务计划》回答"分几步做"。本文回答第三个问题：**代码怎么拆、测试怎么分层、部署和回退怎么自动化**。
 >
-> **当前状态**：仅规划，未写任何代码，未对目标机做任何部署动作。
+> **当前状态**：**已实施并部署**（应用 v0.1.25 于目标机运行中，基础设施三件套
+> Phoenix / 嵌入模型 / spaCy 均已实测在位）。本文是**方案**，不是施工记录 ——
+> 实施进度见文末「实施进度」，尚未修复的问题见第十节「待跟进任务登记」。
 >
-> **目标环境**：`user@192.168.31.163`（主机 `gmk0`，Ubuntu 24.04.4，Docker 29.1.4 + Compose v5.0.1，Python 3.12.3）
+> **目标环境**：`qqjianyue@192.168.31.163`（主机 `gmk0`，Ubuntu 24.04.4，Docker 29.1.4 + Compose v5.0.1，Python 3.12.3）
+> —— 早期版本写作 `user@…`，**实际 SSH 用户名是 `qqjianyue`**，照抄旧命令会直接认证失败。
 
 ---
 
@@ -347,6 +350,137 @@ pytest -m "" -q
 - 不做模型微调（JD 提到，但不是本项目主线）
 - 不做高并发压测（单机演示项目，指标以 p50/p95 记录为主）
 - 不把 MiniMax 服务端指标纳入观测（信任边界之外，调用侧闭环）
+
+---
+
+## 十、待跟进任务登记
+
+> **定位**：这里登记**已确认存在、但尚未修复**的交付/基础设施/可观测性问题。
+> 每条都必须写清**证据**与**复现方式** —— 没有证据的条目不写进来，
+> 那只是猜测（与《上线前重大问题.md》同一纪律）。
+>
+> **优先级定义**：1 = 最高，5 = 最低。1 是"影响安全属性或让数据无法归因"；
+> 2 是"保护缺失但系统表现正常"；3 是"功能不可用但有 workaround"；
+> 4 是"运维体验/一致性"；5 是"可读性与噪音"。
+>
+> **维护方式**：修复一条就删一条，并在提交信息里说明。不允许在这里沉淀历史，
+> 历史在 git 里。
+
+### P1　审计账本丢失 `fail_mode` / `failed_detectors`，无法区分"判有害"与"判不了"
+
+| 项 | 内容 |
+|---|---|
+| 状态 | **未修** |
+| 严重性 | P1 —— 事故时无法归因 |
+| 证据 | 目标机 `shared/audit/ledger.jsonl` 共 4919 行，全库只出现**一种**字段组合（13 个键），**不含** `fail_mode`；其中 **102 行**是 `action=block` + `matched=false` + `rule_name=null` + `evidence=[]` 的形状，与一次普通放行在账本里**完全同形** |
+
+**根因**：`Decision` 对象带着 `fail_mode` / `failed_detectors`，`Decision.to_audit_record()`
+也带着，但 `audit_ledger/record.py` 的 `AuditRecord` dataclass **没有这两个字段** ——
+信息在**落盘那一刻**被丢掉。`/guard/inspect` 的 API 响应里能看到，账本里看不到。
+
+**复现**：
+
+```bash
+# 目标机：确认 fail_mode 从未落盘
+tail -1 shared/audit/ledger.jsonl | python3 -c \
+  "import json,sys; d=json.loads(sys.stdin.read()); print('fail_mode' in d, sorted(d))"
+```
+
+**修法方向**：给 `AuditRecord` 补 `fail_mode` 与 `failed_detectors` 两个字段，
+并在 `AuditRecord.from_decision` 里从 `decision` 取值（注意向后兼容：
+老账本行缺这两个键时读回要能容忍）。
+
+---
+
+### P2　检测器掉链在 `/healthz` 上不可见，`fail_mode: closed` 管不到"检测器不存在"
+
+| 项 | 内容 |
+|---|---|
+| 状态 | **未修** |
+| 严重性 | P2 —— 保护缺失但系统显示一切正常 |
+| 证据 | `HealthResponse` 只有 `status: str`（恒为 `"ok"`）与 `detectors: list[str]`，**没有"应有检测器基线"** |
+
+**现象**：Presidio 因 spacy 模型丢失而掉出检测链时，`/healthz` 的 `detectors`
+只是**变短**，`status` 依然是 `ok`，账本里也没有任何降级标记。
+
+**关键区分**：`fail_mode: closed` 管的是"检测器跑了但判不了"，管不了"检测器压根不存在"。
+后者是**装配期**的问题，策略层完全不知情。
+
+**修法方向**：`/healthz` 增加一个"期望检测器集"基线（按已配置依赖推导），
+掉链时 `status` 改为 `degraded` 并列出缺失项，让部署闸门能看见。
+
+---
+
+### P3　护栏没有总开关，`GuardSettings` 的三个开关是死代码
+
+| 项 | 内容 |
+|---|---|
+| 状态 | **未修** |
+| 严重性 | P3 —— 影响"紧急降级"能力，不是安全问题 |
+
+**证据**：`GuardSettings`（`src/guard_contract/policy_schema.py`）声明了
+`detectors_enabled` / `llm_judge_enabled` / `detector_timeout_ms`，
+但 `src/` 下**除定义处外零处读取**。`GuardPipeline(enabled=...)` 这个参数存在，
+而 `container.py` 装配时**从不传**，恒为 `None`（= 全开）。
+
+**后果**：想"只跑 L1"或"关掉 L4"只能改代码改配置策略，不能靠开关。
+而 `GuardSettings` 不在 `Settings` 里、没有环境变量映射
+（`MINIMAX_AGENT_GUARD__*` 这种写法不存在），连测试之外的注入路径都没有。
+
+**注**：护栏的**当前默认态是开启且 fail-closed**（L1 常驻，默认策略
+`fail_mode: closed`）。这不是缺陷，是设计；但它使 P3 更值得做 ——
+紧急降级需要一条不需要改代码的路径。
+
+---
+
+### P4　`infra/README.md` 承诺的"应用接缝"未落地：模型完整性只有 setup.sh 自己会校验
+
+| 项 | 内容 |
+|---|---|
+| 状态 | **未修**（README 已于 2026-10-24 改成事实描述，不再宣称已实现） |
+| 严重性 | P4 —— 一致性/运维体验 |
+
+**证据**：`infra/README.md` 原先写着"C5 detector-ml 启动时校验模型完整性，
+失败拒绝启动"。实际：
+
+- `src/detector_ml/embedders.py` 只做 `import sentence_transformers` + 目录探测 + 加载，
+  **不校验 sha256、不调用 `setup.sh verify`**
+- `src/detector_ml/presidio_pii.py` 只做 import + `spacy.load`，同样不校验
+- `src/agent_service/container.py` 对检测器构建失败的处理是**跳过并记 warning**
+  （与"拒绝启动"方向相反，即 P0-2）
+- `deploy/status.sh` 的基础设施段只有 `docker ps` 查 Phoenix，**没有那两行完整性检查**
+
+**后果**：D1 的 `manifest.lock.json`（12 文件 sha256）与 D2 的 `spacy.load` 真加载校验，
+目前**只有 setup.sh 自己会调**。模型文件被截断或污染时，模型照常加载、
+检测结果悄悄变差，**全程无任何信号**。
+
+**修法方向**：在 `container.py` 装配检测器时调对应 `setup.sh verify`（失败即拒绝启动），
+并在 `status.sh` 补完整性检查行。
+
+---
+
+### P5　presidio recognizer 语言噪声刷屏，真正的告警会被淹没
+
+| 项 | 内容 |
+|---|---|
+| 状态 | **暂不处理**（2026-10-24 登记） |
+| 严重性 | P5 —— 可读性与噪音，不影响功能 |
+| 证据 | 目标机 `shared/logs/stderr.log` 共 19391 行，其中 **WARNING 5746 条**、ERROR 0、Traceback 0。全部是同一类：`Recognizer not added to registry because language is not supported by registry - <es/it/pl> ... supported languages: en, zh` |
+
+**现象**：Presidio 自带 es/it/pl 语种的识别器，在 en/zh registry 下每台机器每次重启
+各刷一遍。日志量看起来像有故障，实际什么也没有。
+
+**为什么是 P5 而不是更高**：它不影响检测结果、不影响性能、不影响安全属性 ——
+只是把"日志很吵"和"日志里有真问题"这两件事混在了一起。
+但它确实让"翻日志找告警"变难，而本项目恰好**已经有一个同类问题**：
+P1/P2 的根因都是"该显形的东西没显形"，日志噪音会进一步推迟发现。
+
+**修法方向**：过滤 `presidio-analyzer` 的 language-not-supported 警告
+（按 logger 名 + 消息模式），**保留**同 logger 的其它级别与其它消息 ——
+不能简单地按 logger 名整体静音，那会把真正的 recognizer 加载失败一起吞掉。
+
+**相关背景**：机器每天 23:30 UTC 自动重启（crontab `45 15 * * * shutdown -h now`），
+所以这批噪声**每天刷一遍**，且刚好落在服务启动日志里 —— 启动日志是最常被人工翻阅的那一段。
 
 ---
 

@@ -8,7 +8,10 @@ name: phoenix
 
 services:
   phoenix:
-    image: ${PHOENIX_IMAGE:?PHOENIX_IMAGE 未设置，请先复制 env.template 为 env}:${PHOENIX_IMAGE_TAG:-latest}
+    # 镜像 tag **不给默认值**：`:-latest` 会在 env 里这行被误删时静默回落到
+    # latest —— 而 latest 已经被上游漂到未验证的 20.26.0。宁可启动失败，
+    # 也不要在生产机上悄悄换一个没验证过的版本。
+    image: ${PHOENIX_IMAGE:?PHOENIX_IMAGE 未设置，请先复制 env.template 为 env}:${PHOENIX_IMAGE_TAG:?PHOENIX_IMAGE_TAG 未设置，请在 env 里固定具体 tag，不要用 latest}
     container_name: minimax-agent-phoenix
     restart: unless-stopped
     ports:

@@ -9,21 +9,33 @@ schema_version: 1
 components:
   - name: phoenix
     description: Arize Phoenix —— trace 存储、评估 UI（对应架构方案 §4.3）
-    version: "v20.20.0 (image sha256:f66af1843d0dccc2027e577393a544324f11b17ba033dce90343c4e66e1fd539)"
+    version: "20.20.0"
     image: arizephoenix/phoenix
-    image_tag: latest
+    image_tag: 20.20.0
+    #: 镜像 ID（config digest）—— 目标机上 `docker inspect` 的 ImageID
+    image_id: "sha256:f66af1843d0dccc2027e577393a544324f11b17ba033dce90343c4e66e1fd539"
+    #: manifest list digest —— 上游 tag 20.20.0 的 registry digest
+    image_digest: "sha256:3a2e5a049f706f29c7b13bd82bcd94101bb10701874ce134ec9eb7f0299741aa"
     compose_file: infra/phoenix/compose.yaml
     setup_script: infra/phoenix/setup.sh
     port: 6006
     state: deployed
-    updated: "2026-10-10"
+    updated: "2026-10-24"
     notes: >-
       容器 minimax-agent-phoenix（healthcheck exec 形式直调 python3.13，
       镜像无 /bin/sh 不能用 CMD-SHELL）；数据在 shared/data/phoenix，
       应用回退不丢。目标机不能直连 Docker Hub（registry-1.docker.io EOF），
-      只能走镜像加速器拉取；以镜像 ID 为不可变锚点，upgrade 后对比
-      `docker inspect --format '{{.Id}}'` 判断上游漂移。
-      应用侧 telemetry.enabled=true，trace 落库已验证（FT-11）。
+      只能走镜像加速器拉取。
+      tag 已固定为 20.20.0（上游 tag 名不带 v 前缀）—— manifest list digest
+      与目标机 `docker image inspect` 的 RepoDigests 逐字符交叉验证一致，
+      即 pin 后 compose pull 拉到的是同一个镜像。latest 已于 2026-10-23
+      漂到 20.26.0（digest 095f4987…），跟随 latest 会在一次 pull 里
+      把生产环境换成未验证版本，故 compose.yaml 不再给 TAG 默认值。
+      组件配置（infra/phoenix/env）在目标机仓库副本里，**不进 release** ——
+      基础设施独立于核心服务的 release 生命周期（回退只切 current 符号链接）。
+      应用侧 telemetry.enabled=true 已固化进 deploy/env.template，
+      trace 落库已验证（FT-11）：default 项目实测 traceCount=2036，
+      覆盖 2026-10-10 ~ 2026-10-12。
 
   - name: embedding-model
     description: sentence-transformers 嵌入模型（D1，中文 bge-base-zh-v1.5，768 维）
