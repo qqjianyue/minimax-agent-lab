@@ -26,7 +26,8 @@ import audit_ledger
 from audit_ledger import AuditLedger, JsonlAuditSink, SystemClockAdapter
 from audit_ledger.__main__ import main
 from detector_rules.redactor import RegexRedactor
-from guard_contract.enums import GuardStage, PolicyAction
+from guard_contract.enums import FailMode, GuardStage, PolicyAction
+from guard_contract.port import DetectorFailure, DetectorFailureReason
 from guard_contract.result import DetectorResult
 from policy_engine.decision import Decision
 from tests.fakes import FrozenClock
@@ -493,3 +494,217 @@ class TestEntryPoint:
         )
         assert result.returncode == 0, result.stderr
         assert "总记录:   3" in result.stdout
+
+# ---------------------------------------------------------------------------
+# P1-1：CLI 必须能区分「判不了」与「判有害」
+# ---------------------------------------------------------------------------
+
+
+def make_failed_decision(*, request_id: str, matched: bool = False) -> Decision:
+    """构造一条"检测器没能给出结论"的决策（fail-closed 路径）。"""
+    result = DetectorResult(
+        detector="rules.l1",
+        version="1.0.0",
+        stage=GuardStage.INPUT,
+        label="safe",
+        score=0.0,
+        confidence=0.9,
+        evidence=(),
+        metadata={},
+    )
+    return Decision(
+        action=PolicyAction.BLOCK,
+        reason="检测器不可用且未能完成检查，按 fail-closed 阻断",
+        rule_name=None,
+        matched=matched,
+        request_id=request_id,
+        tenant="default",
+        use_case="bank-assistant-demo",
+        stage=GuardStage.INPUT,
+        policy_version="1.0.0",
+        results=(result,),
+        attempted_detectors=["rules.l1", "llm.judge"],
+        fail_mode=FailMode.CLOSED,
+        failed_detectors=(
+            DetectorFailure(
+                detector="llm.judge",
+                reason=DetectorFailureReason.ERROR,
+                detail="judge 输出不是合法 JSON",
+            ),
+        ),
+    )
+
+
+def write_ledger_with_failures(root: Path) -> Path:
+    """一份覆盖**全部四种判定语义**的账本。
+
+    | 记录 | fail_mode | matched | 语义 |
+    |---|---|---|---|
+    | req-cannot-tell | closed | False | 判不了 |
+    | req-normal | 无 | False | 正常放行 |
+    | req-hit | 无 | True | 命中 |
+    | req-hit-with-failure | closed | True | 命中（有检测器失败） |
+    """
+    path = root / "audit" / "ledger.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clock = FrozenClock(START)
+    ledger = AuditLedger(
+        JsonlAuditSink(path),
+        clock=SystemClockAdapter(clock),
+        redactor=RegexRedactor(),
+        retention_days=365,
+    )
+    clean = DetectorResult(
+        detector="rules.l1",
+        version="1.0.0",
+        stage=GuardStage.INPUT,
+        label="safe",
+        score=0.0,
+        confidence=0.9,
+        evidence=(),
+        metadata={},
+    )
+
+    def decision(
+        request_id: str,
+        *,
+        action: PolicyAction,
+        matched: bool,
+        fail_mode: FailMode | None = None,
+        failed: tuple[DetectorFailure, ...] = (),
+    ) -> Decision:
+        return Decision(
+            action=action,
+            reason="检测器不可用且未能完成检查，按 fail-closed 阻断"
+            if fail_mode
+            else "未命中任何策略规则，走 default_action",
+            rule_name=None,
+            matched=matched,
+            request_id=request_id,
+            tenant="default",
+            use_case="bank-assistant-demo",
+            stage=GuardStage.INPUT,
+            policy_version="1.0.0",
+            results=(clean,),
+            attempted_detectors=["rules.l1", "llm.judge"],
+            fail_mode=fail_mode,
+            failed_detectors=failed,
+        )
+
+    failure = (
+        DetectorFailure(
+            detector="llm.judge",
+            reason=DetectorFailureReason.ERROR,
+            detail="judge 输出不是合法 JSON",
+        ),
+    )
+    ledger.record(
+        decision(
+            "req-cannot-tell",
+            action=PolicyAction.BLOCK,
+            matched=False,
+            fail_mode=FailMode.CLOSED,
+            failed=failure,
+        )
+    )
+    clock.advance_days(1)
+    ledger.record(
+        decision("req-normal", action=PolicyAction.ALLOW, matched=False)
+    )
+    clock.advance_days(1)
+    ledger.record(
+        decision("req-hit", action=PolicyAction.BLOCK, matched=True)
+    )
+    clock.advance_days(1)
+    ledger.record(
+        decision(
+            "req-hit-with-failure",
+            action=PolicyAction.BLOCK,
+            matched=True,
+            fail_mode=FailMode.CLOSED,
+            failed=failure,
+        )
+    )
+    return path
+
+
+class TestVerdictProvenance:
+    def test_query_shows_that_it_cannot_tell(
+        self, root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        write_ledger_with_failures(root)
+        assert main(["query", "--root", str(root), "--request-id", "req-cannot-tell"]) == 0
+        out = capsys.readouterr().out
+        assert "判不了" in out
+        assert "fail_mode=closed" in out
+        assert "llm.judge(error)" in out
+
+    def test_failed_only_filters_out_normal_records(
+        self, root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        write_ledger_with_failures(root)
+        assert main(["query", "--root", str(root), "--failed-only"]) == 0
+        out = capsys.readouterr().out
+        assert "req-cannot-tell" in out
+        assert "req-normal" not in out
+
+    def test_summary_counts_undecidable_records(
+        self, root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """summary 要能回答「有多少次是系统判定自己判不了」。"""
+        write_ledger_with_failures(root)
+        assert main(["summary", "--root", str(root), "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["by_kind"]["判不了"] == 1
+        assert payload["by_failed_detector"] == {"llm.judge": 2}
+
+    def test_summary_json_reports_all_four_kinds(
+        self, root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """四种语义各归其类 —— 读取时现算，不靠落盘的派生标记。"""
+        write_ledger_with_failures(root)
+        assert main(["summary", "--root", str(root), "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["total"] == 4
+        assert payload["by_kind"] == {
+            "命中": 1,
+            "正常放行": 1,
+            "判不了": 1,
+            "命中（有检测器失败）": 1,
+        }
+
+    def test_legacy_records_report_no_failure(
+        self, root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """**存量记录读出来是"没有失败"，不是"判不了"。**
+
+        旧记录里根本没有这两个字段 —— 反推就是编造，所以默认必须是"无失败"。
+        """
+        path = root / "audit" / "ledger.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "request_id": "req-legacy",
+                    "recorded_at": "2026-10-09T01:12:59.744806+00:00",
+                    "tenant": "default",
+                    "use_case": "bank-assistant-demo",
+                    "stage": "input",
+                    "action": "allow",
+                    "rule_name": None,
+                    "matched": False,
+                    "policy_version": "1.0.0",
+                    "detectors": ["rules.l1"],
+                    "hit_labels": [],
+                    "evidence": [],
+                    "metadata": {},
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert main(["summary", "--root", str(root), "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["by_kind"] == {"正常放行": 1}
+        assert "by_failed_detector" not in payload or not payload["by_failed_detector"]

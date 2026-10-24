@@ -18,7 +18,8 @@ import pytest
 
 from audit_ledger import AuditLedger, AuditRecord, JsonlAuditSink
 from detector_rules.redactor import RegexRedactor
-from guard_contract.enums import GuardStage, PolicyAction
+from guard_contract.enums import FailMode, GuardStage, PolicyAction
+from guard_contract.port import DetectorFailure, DetectorFailureReason
 from guard_contract.result import DetectorResult
 from policy_engine.decision import Decision
 
@@ -482,3 +483,162 @@ class TestEmptyLedger:
         )
         ledger.record(make_decision())
         assert ledger.path.is_file()
+
+# ---------------------------------------------------------------------------
+# P1-1：失败路径必须可归因
+# ---------------------------------------------------------------------------
+
+
+def make_failed_decision(
+    *,
+    request_id: str = "req-fail",
+    fail_mode: FailMode = FailMode.CLOSED,
+    detector: str = "llm.judge",
+    reason: DetectorFailureReason = DetectorFailureReason.ERROR,
+    detail: str = "judge 输出不是合法 JSON: 'not json'",
+    matched: bool = False,
+) -> Decision:
+    """构造一条"检测器没能给出结论"的决策。
+
+    ``detail`` 里刻意放了**像用户输入回声的内容** —— 账本不该存它。
+    """
+    result = DetectorResult(
+        detector="rules.l1",
+        version="1.0.0",
+        stage=GuardStage.INPUT,
+        label="safe",
+        score=0.0,
+        confidence=0.9,
+        evidence=(),
+        metadata={},
+    )
+    return Decision(
+        action=PolicyAction.BLOCK,
+        reason="检测器不可用且未能完成检查，按 fail-closed 阻断",
+        rule_name=None,
+        matched=matched,
+        request_id=request_id,
+        tenant="default",
+        use_case="bank-assistant-demo",
+        stage=GuardStage.INPUT,
+        policy_version="1.0.0",
+        results=(result,),
+        attempted_detectors=["rules.l1", "llm.judge"],
+        fail_mode=fail_mode,
+        failed_detectors=(
+            DetectorFailure(detector=detector, reason=reason, detail=detail),
+        ),
+    )
+
+
+class TestFailureProvenance:
+    """P1-1：**「判不了」与「判有害」在账本里必须可区分**。
+
+    修复前两者形状完全一样（``rule_name=null`` / ``matched=false`` /
+    ``evidence=[]``）—— 调用方当时能从 API 响应里看到 ``fail_mode``，
+    账本里却什么都没有。
+    """
+
+    def test_fail_mode_and_failed_detectors_land_on_disk(
+        self, ledger: AuditLedger
+    ) -> None:
+        ledger.record(make_failed_decision())
+
+        [stored] = list(ledger.records())
+        assert stored.fail_mode == "closed"
+        assert stored.failed_detectors == (
+            {"detector": "llm.judge", "reason": "error"},
+        )
+
+    def test_detail_is_not_stored(self, ledger: AuditLedger) -> None:
+        """detail 是异常消息，可能复述用户输入 —— 账本是 append-only，不该存。"""
+        ledger.record(make_failed_decision(detail="我的身份证号是 11010519491231002X"))
+
+        raw = ledger.path.read_text(encoding="utf-8")
+        assert "11010519491231002X" not in raw
+        assert "detail" not in raw
+
+    def test_reason_is_stored_verbatim(self, ledger: AuditLedger) -> None:
+        """reason 来自 policy 配置或引擎常量，是配置文本而非用户内容，原样存。"""
+        ledger.record(make_failed_decision())
+
+        [stored] = list(ledger.records())
+        assert stored.reason == "检测器不可用且未能完成检查，按 fail-closed 阻断"
+
+    def test_normal_record_has_no_failure_fields(self, ledger: AuditLedger) -> None:
+        """正常判定的记录不该凭空长出 fail_mode。"""
+        ledger.record(make_decision())
+
+        [stored] = list(ledger.records())
+        assert stored.fail_mode is None
+        assert stored.failed_detectors == ()
+        assert stored.reason == "命中 PII"
+
+    def test_hit_while_a_detector_failed_keeps_both(
+        self, ledger: AuditLedger
+    ) -> None:
+        """正向命中优先于 fail_mode：引擎的语义是"有结论就用结论"。
+
+        这种记录既命中了规则、又有检测器挂了 —— 两个事实都要落盘，
+        解释（"命中但有检测器失败"）由读取侧现算。
+        """
+        decision = make_failed_decision(matched=True)
+        ledger.record(decision)
+
+        [stored] = list(ledger.records())
+        assert stored.matched is True
+        assert stored.fail_mode == "closed"
+        assert stored.failed_detectors
+
+    def test_legacy_record_without_new_fields_is_readable(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """**存量记录照读** —— 新字段是纯追加，不需要迁移脚本。
+
+        修复 P1-1 之前写的每一行都没有这三个键。它们读出来必须是默认值，
+        而不是抛异常。
+        """
+        path = tmp_path / "legacy.jsonl"
+        legacy = {
+            "request_id": "req-old",
+            "recorded_at": "2026-10-09T01:12:59.744806+00:00",
+            "tenant": "default",
+            "use_case": "bank-assistant-demo",
+            "stage": "input",
+            "action": "allow",
+            "rule_name": None,
+            "matched": False,
+            "policy_version": "1.0.0",
+            "detectors": ["rules.l1"],
+            "hit_labels": [],
+            "evidence": [],
+            "metadata": {},
+        }
+        path.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        ledger = AuditLedger(
+            JsonlAuditSink(path), clock=clock, redactor=RegexRedactor()
+        )
+        [stored] = list(ledger.records())
+        assert stored.request_id == "req-old"
+        assert stored.fail_mode is None
+        assert stored.failed_detectors == ()
+        assert stored.reason == ""
+
+    def test_round_trip_keeps_the_new_fields(self, ledger: AuditLedger) -> None:
+        """写出去再读回来，新字段不能丢。"""
+        ledger.record(make_failed_decision())
+
+        [stored] = list(ledger.records())
+        assert stored.fail_mode == "closed"
+        assert stored.failed_detectors[0]["detector"] == "llm.judge"
+        assert stored.reason
+
+    def test_prune_keeps_the_new_fields(self, ledger: AuditLedger) -> None:
+        """保留期清理会整文件重写 —— 重写不能把新字段丢掉。"""
+        ledger.record(make_failed_decision())
+        ledger.enforce_retention()
+
+        [stored] = list(ledger.records())
+        assert stored.fail_mode == "closed"
+        assert stored.failed_detectors

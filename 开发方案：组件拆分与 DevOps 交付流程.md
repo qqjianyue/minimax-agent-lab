@@ -366,32 +366,6 @@ pytest -m "" -q
 > **维护方式**：修复一条就删一条，并在提交信息里说明。不允许在这里沉淀历史，
 > 历史在 git 里。
 
-### P1　审计账本丢失 `fail_mode` / `failed_detectors`，无法区分"判有害"与"判不了"
-
-| 项 | 内容 |
-|---|---|
-| 状态 | **未修** |
-| 严重性 | P1 —— 事故时无法归因 |
-| 证据 | 目标机 `shared/audit/ledger.jsonl` 共 4919 行，全库只出现**一种**字段组合（13 个键），**不含** `fail_mode`；其中 **102 行**是 `action=block` + `matched=false` + `rule_name=null` + `evidence=[]` 的形状，与一次普通放行在账本里**完全同形** |
-
-**根因**：`Decision` 对象带着 `fail_mode` / `failed_detectors`，`Decision.to_audit_record()`
-也带着，但 `audit_ledger/record.py` 的 `AuditRecord` dataclass **没有这两个字段** ——
-信息在**落盘那一刻**被丢掉。`/guard/inspect` 的 API 响应里能看到，账本里看不到。
-
-**复现**：
-
-```bash
-# 目标机：确认 fail_mode 从未落盘
-tail -1 shared/audit/ledger.jsonl | python3 -c \
-  "import json,sys; d=json.loads(sys.stdin.read()); print('fail_mode' in d, sorted(d))"
-```
-
-**修法方向**：给 `AuditRecord` 补 `fail_mode` 与 `failed_detectors` 两个字段，
-并在 `AuditRecord.from_decision` 里从 `decision` 取值（注意向后兼容：
-老账本行缺这两个键时读回要能容忍）。
-
----
-
 ### P2　检测器掉链在 `/healthz` 上不可见，`fail_mode: closed` 管不到"检测器不存在"
 
 | 项 | 内容 |

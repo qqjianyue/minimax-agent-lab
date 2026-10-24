@@ -195,6 +195,32 @@ def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _verdict_kind(record: AuditRecord) -> str:
+    """这条记录属于哪一种判定语义。
+
+    **读取时现算，不落盘** —— 落盘只存事实（``fail_mode`` / ``matched`` /
+    ``action``），解释是会变的：policy 语义一改，烤进数据的标记就过期了。
+
+    ==========  ========  ====================================
+    fail_mode   matched  语义
+    ==========  ========  ====================================
+    空          True     正常判定命中（判有害）
+    空          False    正常放行（检测器都跑完了，都说安全）
+    非空        True     判到了，但同时有检测器挂了（命中有效）
+    非空        False    **判不了**（系统判定自己判不了）
+    ==========  ========  ====================================
+
+    最后一类在 fail-closed 策略下会表现为"阻断" —— 也就是最容易被误读成
+    "模型判定内容有害"的那一类。修复 P1-1 之前，账本里这一类与一次普通
+    ``allow`` 的形状**完全一样**。
+    """
+    if record.fail_mode is None:
+        return "命中" if record.matched else "正常放行"
+    if record.matched:
+        return "命中（有检测器失败）"
+    return "判不了"
+
+
 def _print_summary_text(
     ledger_path: Path,
     total: int,
@@ -202,6 +228,8 @@ def _print_summary_text(
     last: str | None,
     by_action: Counter[str],
     by_stage: Counter[str],
+    by_kind: Counter[str],
+    by_failed_detector: Counter[str],
 ) -> None:
     print(f"[audit] 账本:     {ledger_path}")
     print(f"[audit] 总记录:   {total}")
@@ -217,19 +245,42 @@ def _print_summary_text(
         for key, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"               {key:<20}{count}")
 
+    print("[audit] 按判定语义:")
+    if not by_kind:
+        print("               （无）")
+    else:
+        for key, count in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"               {key:<20}{count}")
+
+    if by_failed_detector:
+        print("[audit] 挂掉的检测器:")
+        for key, count in sorted(by_failed_detector.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"               {key:<20}{count}")
+
 
 def _print_record(index: int, record: AuditRecord) -> None:
     rule = record.rule_name or "-"
     print(
         f"[{index}] {record.request_id} | {record.recorded_at} | "
-        f"{record.stage.value} | {record.action.value} | rule={rule}"
+        f"{record.stage.value} | {record.action.value} | rule={rule} "
+        f"| {_verdict_kind(record)}"
     )
     print(
         f"    tenant: {record.tenant}   use_case: {record.use_case}   "
         f"policy={record.policy_version}"
     )
+    if record.reason:
+        print(f"    reason: {record.reason}")
     print(f"    detectors: {', '.join(record.detectors) or '-'}")
     print(f"    hits: {', '.join(record.hit_labels) or '-'}")
+    if record.failed_detectors:
+        parts = [
+            f"{item.get('detector', '?')}({item.get('reason', '?')})"
+            for item in record.failed_detectors
+        ]
+        print(
+            f"    ⚠ 判不了：fail_mode={record.fail_mode}  失败检测器: {', '.join(parts)}"
+        )
     if record.evidence:
         print("    evidence:")
         for item in record.evidence:
@@ -259,6 +310,12 @@ def cmd_summary(args: argparse.Namespace) -> int:
     records = list(ledger.records())
     by_action = Counter(r.action.value for r in records)
     by_stage = Counter(r.stage.value for r in records)
+    by_kind = Counter(_verdict_kind(r) for r in records)
+    by_failed_detector = Counter(
+        item.get("detector", "?")
+        for r in records
+        for item in r.failed_detectors
+    )
     stamps = sorted(r.recorded_at for r in records)
     first = stamps[0] if stamps else None
     last = stamps[-1] if stamps else None
@@ -272,10 +329,21 @@ def cmd_summary(args: argparse.Namespace) -> int:
                 "last_recorded_at": last,
                 "by_action": dict(by_action),
                 "by_stage": dict(by_stage),
+                "by_kind": dict(by_kind),
+                "by_failed_detector": dict(by_failed_detector),
             }
         )
     else:
-        _print_summary_text(ledger_path, len(records), first, last, by_action, by_stage)
+        _print_summary_text(
+            ledger_path,
+            len(records),
+            first,
+            last,
+            by_action,
+            by_stage,
+            by_kind,
+            by_failed_detector,
+        )
     return 0
 
 
@@ -306,6 +374,11 @@ def cmd_query(args: argparse.Namespace) -> int:
         stage=stage,
         since=since,
     )
+    if args.failed_only:
+        # 只看"有检测器没能给出结论"的记录。**在 CLI 层过滤**，不给
+        # AuditLedger.query 加参数 —— 那是 C8 的对外契约，不该为一次排查需求
+        # 长出新参数（长出来的参数就再也长不回去了）。
+        matched = [r for r in matched if r.fail_mode is not None]
     shown = matched if args.limit <= 0 else matched[: args.limit]
 
     if args.json:
@@ -407,6 +480,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=DEFAULT_LIMIT,
         help=f"最多显示多少条（0 = 不限，默认 {DEFAULT_LIMIT}）",
+    )
+    p_query.add_argument(
+        "--failed-only",
+        action="store_true",
+        help="只看有检测器没能给出结论的记录（判不了 / 有检测器挂掉）",
     )
     _add_common(p_query)
     p_query.set_defaults(func=cmd_query)

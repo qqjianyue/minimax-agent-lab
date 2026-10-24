@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -26,6 +27,8 @@ from agent_core.ports import LLMMessage, LLMPort, LLMRequest
 from detector_ml.timeout import run_detector_with_timeout
 from guard_contract.enums import GuardStage
 from guard_contract.result import DetectorResult
+
+logger = logging.getLogger("detector_ml")
 
 #: judge 版本：prompt 语义变化必须 bump —— 审计要能追溯"判定口径"的变更。
 JUDGE_VERSION = "prompt-v1"
@@ -46,12 +49,40 @@ _LABEL_MAP = {
     "harmful": "harmful_content",
     "pii": "pii_leak",
 }
+
+
+class JudgeResponseError(ValueError):
+    """judge 的响应不可用。
+
+    ``mode`` 标明**失败在哪一步**，让日志能归因，而不是只剩一句"检测器 ERROR"：
+
+    - ``invalid_json`` —— 输出不是合法 JSON
+    - ``unknown_label`` —— label 不在约定取值内
+    - ``score_out_of_range`` —— score 不在 [0, 1]
+
+    **为什么需要它**：这三种失败在 pipeline 里都被归成同一种 ``ERROR``，
+    最终表现成一次 fail-closed 阻断 —— 而 fail-closed 的账本形状与一次普通
+    ``allow`` **完全同形**（P1-1）。出事时最难回答的正是"到底挂在哪一步"。
+
+    继承 ``ValueError`` 是为了不破坏既有约定（调用方与测试都按 ValueError 捕获）。
+
+    ``message`` 保留了原始细节（含模型输出片段），**仅供本地排查**：
+    它不进日志（见 :meth:`LLMJudgeDetector.detect`），也不进审计账本
+    （账本只存 ``{detector, reason}``，见 :class:`audit_ledger.record.AuditRecord`）。
+    """
+
+    def __init__(self, mode: str, message: str) -> None:
+        super().__init__(message)
+        self.mode = mode
 #: 合法 label 全集（benign 表示不命中，不进 _LABEL_MAP）
 _VALID_LABELS = frozenset({"benign"} | set(_LABEL_MAP))
 
 
 def _parse_judge_response(content: str) -> dict[str, Any]:
-    """容错解析 judge 输出：容忍 markdown 围栏与前后杂文本。"""
+    """容错解析 judge 输出：容忍 markdown 围栏与前后杂文本。
+
+    解析失败抛 :class:`JudgeResponseError`，``mode`` 标明失败在哪一步。
+    """
     text = content.strip()
     fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
     if fenced:
@@ -61,13 +92,15 @@ def _parse_judge_response(content: str) -> dict[str, Any]:
         end = text.rindex("}") + 1
         payload = json.loads(text[start:end])
     except (ValueError, json.JSONDecodeError) as exc:
-        raise ValueError(f"judge 输出不是合法 JSON: {content[:80]!r}") from exc
+        raise JudgeResponseError(
+            "invalid_json", f"judge 输出不是合法 JSON: {content[:80]!r}"
+        ) from exc
     label = payload.get("label", "benign")
     if label not in _VALID_LABELS:
-        raise ValueError(f"judge 返回未知 label: {label!r}")
+        raise JudgeResponseError("unknown_label", f"judge 返回未知 label: {label!r}")
     score = float(payload.get("score", 0.0))
     if not 0.0 <= score <= 1.0:
-        raise ValueError(f"judge score 超出 [0,1]: {score}")
+        raise JudgeResponseError("score_out_of_range", f"judge score 超出 [0,1]: {score}")
     return {"label": label, "score": score}
 
 
@@ -115,7 +148,21 @@ class LLMJudgeDetector:
                     max_tokens=self._max_tokens,
                 )
             )
-            verdict = _parse_judge_response(response.content)
+            try:
+                verdict = _parse_judge_response(response.content)
+            except JudgeResponseError as exc:
+                # 归因日志：**只记 mode，不记异常消息**。
+                #
+                # 异常消息里带着模型输出片段（可能是用户输入的回声），
+                # 那属于本地排查素材，不该进服务日志。mode 才是行动所需的信息：
+                # "非法 JSON" / "未知 label" / "score 越界" 三种失败的处理方式
+                # 并不相同 —— 至少现在能区分"模型没听话"与"模型说胡话"。
+                logger.warning(
+                    "llm.judge 响应不可用（mode=%s, model=%s）—— 交由 fail_mode 处理",
+                    exc.mode,
+                    self._model,
+                )
+                raise
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             if verdict["label"] == "benign":
                 return ()
@@ -138,4 +185,9 @@ class LLMJudgeDetector:
         )
 
 
-__all__ = ["JUDGE_SYSTEM_PROMPT", "JUDGE_VERSION", "LLMJudgeDetector"]
+__all__ = [
+    "JUDGE_SYSTEM_PROMPT",
+    "JUDGE_VERSION",
+    "JudgeResponseError",
+    "LLMJudgeDetector",
+]

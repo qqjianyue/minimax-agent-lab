@@ -24,7 +24,7 @@ from detector_ml import (
     PresidioPiiDetector,
 )
 from detector_ml.embedding_similarity import LABEL_INJECTION
-from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT
+from detector_ml.llm_judge import JUDGE_SYSTEM_PROMPT, JudgeResponseError
 from detector_ml.presidio_pii import (
     LABEL_PII,
     LANG_EN,
@@ -778,3 +778,58 @@ class TestDetectorAppliesShapeGate:
         text = "客户张伟的账户信息"
         out = self._detect(text, "PERSON", text.index("张伟"), text.index("张伟") + 2)
         assert out[0].metadata["language"] == LANG_ZH
+
+# --- judge 失败的归因（可选 B） ------------------------------------------------
+
+
+class TestJudgeFailureAttribution:
+    """P1-1 的另一半：**失败要能归因到具体是哪一步**。
+
+    修复前这三种失败在 pipeline 里都是同一种 ``ERROR``，最终表现成一次
+    fail-closed 阻断 —— 出事时只能知道"检测器挂了"，不知道"挂在哪一步"。
+
+    归因信息只进**日志**（带 mode），不进审计账本 —— 账本只存
+    ``{detector, reason}`` 这个结构化事实。
+    """
+
+    @pytest.mark.parametrize(
+        ("content", "mode"),
+        [
+            ("not json at all", "invalid_json"),
+            ('{"label": "mystery", "score": 0.9}', "unknown_label"),
+            ('{"label": "injection", "score": 1.5}', "score_out_of_range"),
+        ],
+        ids=["invalid-json", "unknown-label", "score-out-of-range"],
+    )
+    def test_each_failure_carries_its_own_mode(self, content: str, mode: str) -> None:
+        llm = FakeLLM(judge_responses=[make_response(content)])
+        detector = LLMJudgeDetector(llm, model="MiniMax-M3")
+        with pytest.raises(JudgeResponseError) as excinfo:
+            detector.detect("hello", stage=GuardStage.INPUT)
+        assert excinfo.value.mode == mode
+
+    def test_still_a_value_error(self) -> None:
+        """继承 ValueError —— 既有调用方与测试都按 ValueError 捕获，不能破约。"""
+        assert issubclass(JudgeResponseError, ValueError)
+
+    def test_warning_log_records_mode_but_not_model_output(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**日志里不能出现模型输出片段** —— 那是用户输入的回声。
+
+        只记 mode（哪一步坏了），不记内容。
+        """
+        secret = "我的身份证号是 11010519491231002X"
+        llm = FakeLLM(judge_responses=[make_response(f"not json: {secret}")])
+        detector = LLMJudgeDetector(llm, model="MiniMax-M3")
+
+        with (
+            caplog.at_level("WARNING", logger="detector_ml"),
+            pytest.raises(JudgeResponseError),
+        ):
+            detector.detect(secret, stage=GuardStage.INPUT)
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings, "解析失败必须留一条 warning，否则等于没归因"
+        assert any("mode=invalid_json" in msg for msg in warnings)
+        assert all(secret not in msg for msg in warnings)

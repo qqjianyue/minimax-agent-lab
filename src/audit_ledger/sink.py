@@ -120,6 +120,14 @@ def _record_from_dict(data: dict) -> AuditRecord:
         hit_labels=tuple(data.get("hit_labels", ())),
         evidence=tuple(data.get("evidence", ())),
         metadata=dict(data.get("metadata", {})),
+        # 后三个字段是**后加的**：修复 P1-1 之前写的记录没有它们。
+        # 用 .get 取默认值，存量记录照读 —— 字段是纯追加，不需要迁移脚本。
+        fail_mode=data.get("fail_mode"),
+        failed_detectors=tuple(
+            {"detector": str(item.get("detector", "")), "reason": str(item.get("reason", ""))}
+            for item in data.get("failed_detectors", ())
+        ),
+        reason=data.get("reason", ""),
     )
 
 

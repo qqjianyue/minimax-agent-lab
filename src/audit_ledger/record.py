@@ -10,6 +10,7 @@
 | verdict | ``action`` |
 | evidence | ``DetectorResult.evidence``（**落盘前已脱敏**） |
 | action | ``action`` + ``rule_name`` |
+| 能否归因 | ``fail_mode`` / ``failed_detectors`` / ``reason``（"判不了"与"判有害"要能分开） |
 
 ## 为什么 evidence 在**构造时**就要求已脱敏
 
@@ -70,6 +71,30 @@ class AuditRecord:
     evidence: tuple[str, ...]
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    #: 本次是否走了「检测器没给出结论」的路径。``None`` = 全部检测器都正常返回。
+    #:
+    #: 这个字段回答的是 P1-1 那个问题 —— **「判有害」与「判不了」在账本里
+    #: 曾经完全同形**（都是 ``rule_name=null`` / ``matched=false`` /
+    #: ``evidence=[]``）。调用方在事发当场能从 API 响应体里看到
+    #: ``fail_mode`` 与 ``failed_detectors``，而账本里什么都没有 ——
+    #: 账本不该比 API 响应更贫瘠。
+    fail_mode: str | None = None
+
+    #: 失败的检测器，**只记 ``{detector, reason}``，刻意不记 detail**。
+    #:
+    #: ``detail`` 是异常消息，可能复述用户输入 —— judge 的解析失败消息就带着
+    #: 模型输出片段（``llm_judge.py``）。账本是 append-only，写进去就删不掉，
+    #: 所以这里只留"谁挂了、为什么挂"这个结构化事实。
+    #: 想知道具体挂在哪一步，看服务日志里那条归因 warning（带 ``mode``）。
+    failed_detectors: tuple[dict[str, str], ...] = ()
+
+    #: 人读理由：policy 规则的 ``reason`` 或策略引擎的常量说明。
+    #:
+    #: 刻意**不脱敏**：它来自 policy YAML 或引擎常量，是配置文本而非用户内容
+    #: （fail-closed 路径上就是那句"检测器不可用且未能完成检查，按 fail-closed
+    #: 阻断"）。脱敏反而可能把合法的规则说明改坏。
+    reason: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         # StrEnum 与 tuple 都要能直接 json.dumps
@@ -119,6 +144,14 @@ class AuditRecord:
             hit_labels=tuple(sorted({r.label for r in decision.results})),
             evidence=tuple(evidence),
             metadata=_redact_metadata(dict(metadata or {}), redactor),
+            # 失败路径的两个事实。字段名与 API 响应的 failed_detectors 一致 ——
+            # 账本与响应体说的是同一件事，只是账本说的是**事后**。
+            fail_mode=decision.fail_mode.value if decision.fail_mode is not None else None,
+            failed_detectors=tuple(
+                {"detector": failure.detector, "reason": failure.reason.value}
+                for failure in decision.failed_detectors
+            ),
+            reason=decision.reason,
         )
 
 
